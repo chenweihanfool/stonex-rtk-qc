@@ -38,6 +38,17 @@ def main(argv=None):
         print(f"錯誤：{e}", file=sys.stderr)
         return 2
 
+    # 同一份檔案（sha256 相同）只算一次，避免被誤當成第二次觀測
+    seen, unique = {}, []
+    for pd in pds:
+        if pd.sha256 in seen:
+            print(f"警告：{pd.name} 與 {seen[pd.sha256]} 內容相同（sha256 一致），已略過重複輸入",
+                  file=sys.stderr)
+            continue
+        seen[pd.sha256] = pd.name
+        unique.append(pd)
+    pds = unique
+
     for pd in pds:
         for w in pd.warnings:
             print(w, file=sys.stderr)

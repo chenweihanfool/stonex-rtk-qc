@@ -161,6 +161,16 @@ class TestKnownAndConfig(ScenarioTest):
         rows = read_csv(os.path.join(out, "known_check.csv"))
         self.assertEqual(rows[1][5], "否")
 
+    def test_duplicate_input_ignored(self):
+        dup = os.path.join(self.tmp, "複本.PD")
+        shutil.copyfile(self.files["day1"], dup)
+        out = os.path.join(self.tmp, "dup_out")
+        code, _, err = run_cli([self.files["day1"], dup, self.files["day2"], "--out", out])
+        self.assertEqual(code, 0, err)
+        self.assertIn("已略過重複輸入", err)
+        points = {r[0]: r[10] for r in read_csv(os.path.join(out, "points.csv"))[1:]}
+        self.assertEqual(points, self.flags)
+
     def test_config_overrides_threshold(self):
         cfg = os.path.join(self.tmp, "cfg.json")
         with open(cfg, "w", encoding="utf-8") as f:
