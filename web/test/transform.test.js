@@ -11,20 +11,7 @@ const H = require('./helpers.js');
 const root = H.mkTmp('rtkqc-tf-');
 test.after(() => fs.rmSync(root, { recursive: true, force: true }));
 
-let seq = 0;
-// 以 Python fixture 產生 .PD（control_scenario）與加密點成果表 ctl.csv；only 為只保留的加密點號
-function makeControl(opts) {
-  const dir = path.join(root, 'sc' + (seq++));
-  fs.mkdirSync(dir, { recursive: true });
-  const code = 'import sys, json; sys.path.insert(0, "tests"); import make_fixture as mf; ' +
-    'o = json.loads(sys.argv[2]); only = o.pop("only", None); ' +
-    'sc = mf.control_scenario(sys.argv[1], **o); ' +
-    'ctl = {k: v for k, v in sc["control"].items() if only is None or k in only}; ' +
-    'mf.write_control_csv(sys.argv[1] + "/ctl.csv", ctl); print(sc["pd"])';
-  const r = H.py(['-c', code, dir, JSON.stringify(opts || {})]);
-  assert.equal(r.status, 0, r.stderr);
-  return { dir, pd: r.stdout.trim(), ctl: path.join(dir, 'ctl.csv') };
-}
+const makeControl = (opts) => H.makeControl(root, opts);
 
 const enc = (s) => Buffer.from(s, 'utf8');
 
