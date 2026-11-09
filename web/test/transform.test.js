@@ -106,6 +106,14 @@ test('圖根模式（E1、間隔門檻）與門檻覆蓋', async () => {
   assert.deepStrictEqual(an.result, py.json);
 });
 
+test('圖根模式（traverse）：60 筆，與 Python 相同', async () => {
+  const a = await compare({ fixed_epochs: 60 }, ['--mode', 'traverse'], { mode: 'traverse' });
+  assert.equal(a.an.result.mode, 'traverse');
+  assert.ok(a.an.result.observations.every((o) => !o.flags.includes('E1')));
+  const b = await compare({ fixed_epochs: 59 }, ['--mode', 'traverse'], { mode: 'traverse' });
+  assert.ok(b.an.result.observations.every((o) => o.flags.includes('E1')));
+});
+
 test('每日連測檢查與警告文字', async () => {
   const { an, py } = await compare({ extra_day: true });
   assert.deepEqual(an.result.days_without_control, ['2026-11-02']);
@@ -154,7 +162,10 @@ test('條件不足會丟出 InputError：affine 少於 3 點、helmert 少於 2 
 test('門檻驗證：作業模式預設', () => {
   const c = RTKQC.normalizeThresholds(null, 'control');
   assert.equal(c.min_fixed_epochs, 180);
-  assert.equal(c.min_interval_min, 60);
+  assert.equal(c.min_interval_min, 0);
+  const t = RTKQC.normalizeThresholds(null, 'traverse');
+  assert.equal(t.min_fixed_epochs, 60);
+  assert.equal(t.min_interval_min, 0);
   assert.equal(RTKQC.normalizeThresholds({ min_fixed_epochs: 5 }, 'control').min_fixed_epochs, 5);
   assert.equal(RTKQC.normalizeThresholds(null).min_fixed_epochs, 0);
 });

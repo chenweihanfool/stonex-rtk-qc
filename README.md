@@ -16,7 +16,7 @@ CLI 以 `mode=ro&immutable=1` 唯讀開啟 `.PD`，不寫入原檔。真實觀�
 - **離線使用**：把 `rtkqc.html` 存到電腦，雙擊用瀏覽器（Chrome／Edge／Firefox）開啟即可，不需網路、不需安裝。
 - **更新方式**：頁面載入後會背景檢查線上是否有新版（只讀 `version.json`），有的話頁首出現提示條，點「下載新版」後用新檔取代舊檔即可；離線或檢查失敗時靜默略過，不影響使用。頁首「版本歷程」可看每版變更。
 - **資料不外傳**：所有計算都在本機瀏覽器完成；`.PD` 只在記憶體中讀取，不寫回、不上傳。頁面設有 Content-Security-Policy，除了檢查 `version.json` 之外不會發出任何網路請求。門檻設定只存在你瀏覽器的 localStorage。
-- 輸入：一或多個 `.PD`、已知點 CSV（選填）、作業模式（現況／界址＝survey、圖根＝control）、已知加密點成果表 CSV（選填）、坐標轉換方法、點號來源、門檻（可調）。
+- 輸入：一或多個 `.PD`、已知點 CSV（選填）、作業模式（現況／界址＝survey、圖根＝traverse、控制點＝control）、已知加密點成果表 CSV（選填）、坐標轉換方法、點號來源、門檻（可調）。
 - 結果區有「已知點連測與轉換」摘要卡（轉換方法、共同點數、尺度 ppm、旋轉秒、最大殘差、C1～C3 數）與每日連測警告。
 - 下載：彙整檔 `.xlsx`（主要）、`observations.csv`、`points.csv`、`remeasure.csv`、`known_check.csv`（有已知點才有）、`transform.csv`、`transform_pairs.csv`（有轉換才有）、`handbook.html`、`manifest.json`、CTL、全部打包 `.zip`。
 
@@ -54,14 +54,14 @@ node --test web/test/             # 只用 Node 內建模組；JS 核心與 Pyth
 
 ```
 python -m rtkqc <一或多個 .PD> --out <資料夾> [--known 已知點.csv] [--config 門檻.json] [--id-from auto|name|code] [--json 檔] [--ctl 檔]
-                [--mode survey|control] [--control 加密點成果表.csv] [--transform auto|shift|helmert|affine|none]
+                [--mode survey|traverse|control] [--control 加密點成果表.csv] [--transform auto|shift|helmert|affine|none]
 python -m rtkqc --version
 ```
 
 - `--id-from`：點號來源。預設 `auto`：NAME 全為數字且 CODE 符合經界點代碼樣式（字母開頭、結尾為數字）時用 CODE，否則用 NAME（逐筆判斷）。
 - `--known`：已知點 CSV，欄位 `點號,N,E[,H]`，有無表頭皆可，UTF-8 或 UTF-8-BOM。
 - `--config`：JSON 物件，可覆蓋下表的門檻欄位；未知欄位會報錯。
-- `--mode`：作業模式。`survey`（預設，現況／界址）行為與 v0.2.0 相同、不檢查固定解筆數；`control`（圖根）預設 `min_fixed_epochs` = 180、`min_interval_min` = 60。`--config` 仍可覆蓋。模式記錄在 manifest 與 JSON。
+- `--mode`：作業模式。`survey`（預設，現況／界址）行為與 v0.2.0 相同、不檢查固定解筆數（研究建議界址點 10 筆，可於門檻設定）；`traverse`（圖根）`min_fixed_epochs` = 60（內政部全星系 e-GNSS 界址測量作業探討之建議值，非正式規定，請向主管機關確認）；`control`（控制點）`min_fixed_epochs` = 180（國土測繪中心 e-GNSS 控制測量作業手冊）。所有模式的 `min_interval_min` 預設都是 0（不檢查；手冊規定兩測回間隔無限制）。`--config` 仍可覆蓋。模式記錄在 manifest 與 JSON。
 - `--control`、`--transform`：見「已知加密點連測與坐標轉換」。
 - `--json <檔>`：輸出判定結果正規 JSON（見下方「JSON 契約」）。`--ctl <檔>`：輸出 CTL。
 - 結束碼：`0` 成功；`2` 輸入錯誤（檔案不存在、非 SQLite、缺資料表或欄位、設定錯誤、轉換方法需要的共同點數不足或共同點共線），此時不產生任何輸出檔。
@@ -96,7 +96,7 @@ CSV 一律 UTF-8-BOM，表頭為中文，Excel 可直接開啟。
 | X6 | 僅有一個觀測值 | — |
 | F1 | 任一 epoch 的 Pos_State 不是 FIXED | — |
 | T1 | 天線傾斜偏移量（天線高 × tan(max(|Pitch|,|Roll|))）達門檻 | `tilt_offset_max` (0.01) |
-| E1 | 該筆觀測的 FIXED epoch 數少於門檻（門檻 > 0 才檢查；圖根模式預設 180） | `min_fixed_epochs` (0；control 模式 180) |
+| E1 | 該筆觀測的 FIXED epoch 數少於門檻（門檻 > 0 才檢查） | `min_fixed_epochs` (survey 0；traverse 60；control 180) |
 | D1 | 兩次觀測時間間隔不足 | `min_interval_min` (0 = 不檢查) |
 | K1 | 平均坐標（有轉換用轉換後坐標）與已知坐標 2D 差達門檻（需 `--known`） | `known_tol_2d` (0.02) |
 | C1 | 共同點轉換後，任一坐標分量改正數 \|v\| ≥ 門檻（需 `--control`） | `transform_resid_max` (0.098 m) |
@@ -108,10 +108,9 @@ CSV 一律 UTF-8-BOM，表頭為中文，Excel 可直接開啟。
 
 ## 已知加密點連測與坐標轉換
 
-依據：國土測繪中心「採用虛擬基準站即時動態定位技術辦理加密控制及圖根測量作業手冊」（經研究報告引用）。
+依據見下方「規範依據」。
 
-- 圖根測量：1 Hz、每測回至少 180 筆固定解、兩測回間隔 60 分鐘以上、平面 < 2 cm、高程 < 5 cm（`--mode control` 的預設門檻）。
-- e-GNSS 坐標與法定 TWD97 不一致，要連測已知控制點做轉換：小範圍可用 ≥1 點「坐標分量平移」；精度要求高時用外圍 ≥4 點做 4 或 6 參數平面轉換。
+- e-GNSS 坐標與法定 TWD97 不一致，要連測已知控制點做轉換：小範圍可用 ≥1 點「坐標分量平移」；精度要求高時用外圍 ≥4 點做 4 或 6 參數平面轉換（研究報告引用國土測繪中心 VBS-RTK 辦理加密控制及圖根測量作業手冊）。
 - 轉換後檢核：共同點坐標分量改正數 < 9.8 cm（C1）；共同點間方位角較差 < 20 秒（C2）；水平距相對較差比值 < 1/20000（C3）。
 
 用法：`--control <csv>` 匯入已知加密點成果表（欄位 `點號,N,E[,H]`，解析規則同 `--known`）。觀測點號與加密點號相同者為**共同點**，使用該點的平均坐標當觀測坐標。
@@ -167,6 +166,29 @@ affine : N' = cn + (a1·n + a2·e) + tN      E' = ce + (b1·n + b2·e) + tE
 主站坐標的框架修正：`.PD` 的經緯度（Point.Latitude／Longitude、Base_Latitude／Longitude）是網路 RTCM 轉換前的框架，Point 的 North／East／Height 才是控制器轉換後的 TWD97 網格。對每個主站，取使用該主站的所有觀測：`grid_shift_n = 平均(North − TM2N(Latitude,Longitude))`、`grid_shift_e` 同理、`undulation = 平均(Altitude − Height)`；主站網格坐標 `n = TM2N(基站經緯度) + grid_shift_n`、`e` 同理、`h = Base_Altitude − undulation`。Point 缺少 Latitude／Longitude／Altitude 欄位或值時無法修正，保留未修正值並標 `grid_corrected: false`。
 
 主站判定：Base_ID 相同且基站位置差（近似平面距離）小於 `same_base_tol_m` 視為同一主站。
+
+## 規範依據
+
+1. 國土測繪中心「採用電子化全球衛星即時動態定位系統辦理控制測量作業手冊」（e-GNSS 入口網官方 PDF）：
+   - 每點觀測 2 測回；兩測回間需重新開機（含通訊設備）並重新整置儀器（須改變儀器高度），**時間間隔無限制**。
+   - 每測回至少 180 筆固定解；GPS 衛星數 ≥ 5、衛星仰角 ≥ 15°、PDOP < 10、3DQC ≤ 50 mm。
+   - 兩測回較差：平面 ≤ 20 mm、高程 ≤ 50 mm。
+2. 內政部「採用全星系 e-GNSS 辦理界址測量作業之探討」：建議加密控制點 180 筆、圖根點 60 筆、界址點 10 筆（研究建議值，非正式規定；請向主管機關確認）。
+
+rtkqc 對照：
+
+| 規範項目 | 狀態 |
+| --- | --- |
+| 每測回固定解筆數（180／60／10） | 已檢查（E1，依 `--mode` 預設門檻） |
+| 兩測回時間間隔 | 規範無限制，預設不檢查（`min_interval_min` = 0，可自訂，D1） |
+| PDOP < 10 | 已檢查（X4） |
+| 兩測回平面較差 ≤ 20 mm | 已檢查（X5） |
+| 固定解 HRMS／VRMS 門檻 | 已檢查（X2、X3，門檻 2 cm／5 cm，可調） |
+| 高程較差 ≤ 50 mm | 尚未檢查（僅輸出高程較差數值） |
+| 兩測回須改變儀器高度 | 尚未檢查 |
+| 衛星仰角 ≥ 15° | 尚未檢查 |
+| GPS 單星系衛星數 ≥ 5 | 尚未檢查（.PD 只有總衛星數） |
+| 3DQC ≤ 50 mm | 尚未檢查 |
 
 ## 測試
 

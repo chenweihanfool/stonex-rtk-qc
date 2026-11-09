@@ -76,9 +76,13 @@ class TestHelpers(unittest.TestCase):
 
     def test_mode_thresholds(self):
         s = load_thresholds(None, "survey")
+        t = load_thresholds(None, "traverse")
         c = load_thresholds(None, "control")
         self.assertEqual((s["min_fixed_epochs"], s["min_interval_min"]), (0.0, 0.0))
-        self.assertEqual((c["min_fixed_epochs"], c["min_interval_min"]), (180.0, 60.0))
+        self.assertEqual((t["min_fixed_epochs"], t["min_interval_min"]), (60.0, 0.0))
+        self.assertEqual((c["min_fixed_epochs"], c["min_interval_min"]), (180.0, 0.0))
+        with self.assertRaises(InputError):
+            load_thresholds(None, "nope")
         self.assertEqual(c["transform_resid_max"], 0.098)
         self.assertEqual(c["azimuth_diff_max_sec"], 20.0)
         self.assertEqual(c["distance_ratio_min"], 20000.0)
@@ -368,12 +372,21 @@ class TestModeAndE1(Base):
         code, err, out, r, sc = self.run_scenario(extra=["--mode", "control"])
         self.assertEqual(r["mode"], "control")
         self.assertEqual(r["thresholds"]["min_fixed_epochs"], 180.0)
-        self.assertEqual(r["thresholds"]["min_interval_min"], 60.0)
+        self.assertEqual(r["thresholds"]["min_interval_min"], 0.0)
         self.assertTrue(all("E1" in o["flags"] and "E1" in o["row_flags"]
                             for o in r["observations"]))
         self.assertTrue(all("E1" in p["flags"] for p in r["points"]))
         rem = {x["id"]: x for x in r["remeasure"]}
         self.assertIn("固定解筆數不足，重測並收足筆數", rem["CP00"]["actions"])
+
+    def test_traverse_mode_thresholds(self):
+        code, err, out, r, sc = self.run_scenario(extra=["--mode", "traverse"], fixed_epochs=60)
+        self.assertEqual(r["mode"], "traverse")
+        self.assertEqual(r["thresholds"]["min_fixed_epochs"], 60.0)
+        self.assertEqual(r["thresholds"]["min_interval_min"], 0.0)
+        self.assertTrue(all("E1" not in o["flags"] for o in r["observations"]))
+        code, err, out, r, sc = self.run_scenario(extra=["--mode", "traverse"], fixed_epochs=59)
+        self.assertTrue(all("E1" in o["flags"] for o in r["observations"]))
 
     def test_control_mode_enough_epochs(self):
         code, err, out, r, sc = self.run_scenario(extra=["--mode", "control"], fixed_epochs=180)
