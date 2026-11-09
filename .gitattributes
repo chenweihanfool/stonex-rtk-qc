@@ -1,0 +1,4 @@
+vendor/** -text
+*.wasm binary
+docs/index.html -text
+docs/rtkqc.html -text
