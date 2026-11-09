@@ -203,3 +203,18 @@ test('真實樣本對拍（RTKQC_SAMPLE_PD）', { skip: !process.env.RTKQC_SAMPL
   }
   assert.ok(enc(RTKQC.ctlText(an.points)).equals(p.ctl));
 });
+
+test('語意化版本比較（更新提示用）', () => {
+  assert.equal(RTKQC.compareVersions('0.3.0', '0.2.0'), 1);
+  assert.equal(RTKQC.compareVersions('0.2.0', '0.2.0'), 0);
+  assert.equal(RTKQC.compareVersions('0.1.9', '0.2.0'), -1);
+  assert.equal(RTKQC.compareVersions('1.0.0', '0.99.99'), 1);
+  assert.equal(RTKQC.compareVersions('0.10.0', '0.9.0'), 1);
+  assert.equal(RTKQC.compareVersions('v0.2.1', '0.2.0'), 1);
+  assert.equal(RTKQC.compareVersions('abc', '0.2.0'), null);
+});
+
+test('sortedAntennas 去重並排序', () => {
+  const pds = [{ antennas: [['B2', 'S900A'], ['A1', 'S900A']] }, { antennas: [['A1', 'S900A']] }];
+  assert.deepEqual(RTKQC.sortedAntennas(pds), [['A1', 'S900A'], ['B2', 'S900A']]);
+});

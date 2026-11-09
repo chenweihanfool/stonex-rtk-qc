@@ -873,10 +873,25 @@ function textOutputs(an, runTime, argv) {
   return files;
 }
 
+/** 語意化版本比較：a>b 回傳 1、a<b 回傳 -1、相等 0；格式不符回傳 null。 */
+function compareVersions(a, b) {
+  const parse = (v) => {
+    const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(v).trim());
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  if (!pa || !pb) return null;
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] !== pb[i]) return pa[i] > pb[i] ? 1 : -1;
+  }
+  return 0;
+}
+
 const api = {
   VERSION, InputError, DEFAULT_THRESHOLDS, FLAG_ORDER, FLAG_DESC, ACTIONS,
   roundStr, rnd, fmt, pyNum, lonlatToTm2: TM, readPD, parseKnownCsv, normalizeThresholds,
-  analyze, csvText, ctlText, handbookHtml, manifestObject, textOutputs, sha256Hex,
+  analyze, compareVersions, csvText, ctlText, handbookHtml, manifestObject, textOutputs, sha256Hex, sortedAntennas,
   OBS_HEADER, POINT_HEADER, REMEASURE_HEADER, KNOWN_HEADER,
 };
 return api;
