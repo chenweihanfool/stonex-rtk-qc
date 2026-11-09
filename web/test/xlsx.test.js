@@ -120,7 +120,8 @@ test('觀測資料彙整表：標題、說明列、第 6 列表頭與資料列',
   const z = readZip(bytes);
   const s3 = sheetXml(z, 3);
   assert.equal(cellText(s3, 'A1'), 'RTK圖根測量觀測資料彙整表');
-  assert.equal(cellText(s3, 'A2'), '來源：day1.PD、day2.PD　產製：2026-11-09 12:00　rtkqc 0.2.0');
+  assert.equal(cellText(s3, 'A2'), '來源：day1.PD、day2.PD　產製：2026-11-09 12:00　rtkqc 0.3.0');
+  assert.ok(cellText(s3, 'A3').includes('E1：表固定解筆數不足') && cellText(s3, 'A3').includes('C3：表共同點間水平距相對較差超限'));
   assert.equal(cellText(s3, 'A4'), '備註欄說明');
   assert.equal(cellText(s3, 'C4'), 'X1：表兩次觀測採相同主站。');
   assert.equal(cellText(s3, 'E4'), 'X2:表固定解平面誤差未小於2cm。');
@@ -233,6 +234,65 @@ test('RTKQC_SAMPLE_PD：真實樣本也能產出可讀的 xlsx', { skip: !proces
   const z = readZip(bytes);
   assert.equal(sheetNames(z).length, 6);
   for (const [name, data] of Object.entries(z)) assertWellFormed(data.toString('utf8'), name);
+});
+
+async function buildControl(opts, analyzeOpts) {
+  const sc = H.makeControl(tmp, opts);
+  const pds = await H.readAll([sc.pd]);
+  const control = RTKQC.parseKnownCsv(fs.readFileSync(sc.ctl, 'utf8'));
+  const an = RTKQC.analyze(Object.assign({ pds, control, controlName: 'ctl.csv' }, analyzeOpts || {}));
+  const ctx = { antennas: pds[0].antennas, sources: [pds[0].name], runTime: 'x', version: RTKQC.VERSION,
+    hasKnown: false, hasControl: true };
+  return { an, z: readZip(Buffer.from(RTKXLSX.buildWorkbook(an.result, ctx))) };
+}
+
+test('有加密點：新增「已知點連測與轉換」表（相鄰點位檢核表之後、隔天重測清單之前）', async () => {
+  const { an, z } = await buildControl({ outlier: 0.12 });
+  assert.deepEqual(sheetNames(z), ['接收儀資訊表', '主站坐標表', '觀測資料彙整表', '點位坐標平均值表', '相鄰點位檢核表',
+    '已知點連測與轉換', '隔天重測清單']);
+  for (const [name, data] of Object.entries(z)) assertWellFormed(data.toString('utf8'), name);
+  const s6 = sheetXml(z, 6);
+  const tf = an.result.transform;
+  assert.equal(cellText(s6, 'A1'), '已知點連測與轉換');
+  assert.equal(cellText(s6, 'B2'), '現況／界址（survey）');
+  assert.equal(cellText(s6, 'B3'), '4 參數平面轉換');
+  assert.equal(Number(cellText(s6, 'B4')), 7);
+  assert.equal(Number(cellText(s6, 'B5')), 10);
+  assert.equal(Number(cellText(s6, 'B8')), tf.params.scale_ppm);
+  assert.equal(Number(cellText(s6, 'B9')), tf.params.rotation_sec);
+  assert.ok(s6.includes('共同點坐標分量改正數 &lt; 9.8 cm'));
+  assert.ok(s6.includes('方位角較差 &lt; 20 秒') && s6.includes('1/20000'));
+  assert.ok(s6.includes('共同點殘差'));
+  assert.ok(s6.includes('共同點間方位角與邊長檢核'));
+  assert.ok(s6.includes('<t xml:space="preserve">C1</t>'));
+  // 共同點殘差表筆數 + 兩兩檢核表筆數
+  const rowCount = [...s6.matchAll(/<row r="/g)].length;
+  assert.ok(rowCount >= 7 + 21 + 8, String(rowCount));
+});
+
+test('有加密點：觀測表 N、O 欄、點位表為轉換後坐標與註記', async () => {
+  const { an, z } = await buildControl({});
+  const s3 = sheetXml(z, 3);
+  assert.equal(cellText(s3, 'N6'), '最近已知加密點');
+  assert.equal(cellText(s3, 'O6'), '距離(m)');
+  const o = an.result.observations[0];
+  assert.equal(cellText(s3, 'N7'), o.nearest_control);
+  assert.equal(Number(cellText(s3, 'O7')), o.nearest_control_dist);
+  const s4 = sheetXml(z, 4);
+  const p = an.result.points[0];
+  assert.equal(Number(cellText(s4, 'B2')), p.n_t);
+  assert.notEqual(p.n_t, p.avg_n);
+  assert.equal(cellText(s4, 'A' + (an.result.points.length + 3)), '坐標已由 e-GNSS 以 4 參數平面轉換 轉換為法定坐標');
+});
+
+test('有加密點但無共同點：新工作表註明不轉換；C 旗標會進備註欄', async () => {
+  const a = await buildControl({ only: ['ZZ'] });
+  const s6 = sheetXml(a.z, 6);
+  assert.ok(s6.includes('不轉換（沒有共同點，或指定不轉換）'));
+  assert.equal(cellText(sheetXml(a.z, 4), 'B2') !== null, true);
+  const b = await buildControl({ outlier: 0.12 });
+  const idx = b.an.result.observations.findIndex((x) => x.id === 'CP00');
+  assert.ok(cellText(sheetXml(b.z, 3), 'K' + (idx + 7)).includes('C1'));
 });
 
 test('主站坐標表註記：有修正時寫明平均 dN／dE', () => {

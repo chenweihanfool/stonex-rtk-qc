@@ -1,7 +1,7 @@
 {
-  "version": "0.2.0",
+  "version": "0.3.0",
   "date": "2026-11-09",
-  "notes": "・新增單檔 HTML（docs/rtkqc.html）：雙擊即用、免安裝、離線可用，所有計算都在本機瀏覽器完成，資料不外傳。\n・新增 113 年標準版格式的彙整檔 .xlsx（接收儀資訊表、主站坐標表、觀測資料彙整表、點位坐標平均值表、相鄰點位檢核表、隔天重測清單、已知點檢核）。\n・新增 CTL 輸出（點名右靠 8 字元、縱坐標、橫坐標）。\n・新增判定結果正規 JSON（--json），作為 JS 與 Python 對拍的契約。\n・主站坐標修正框架差：以同主站觀測點的控制器網格坐標修正經緯度換算 TM2 的框架差，高程改為橢球高減平均大地起伏。\n・新增相鄰點位檢核（門檻 neighbor_max_m，預設 100 m）與主站坐標（TWD97 TM2 換算）。\n・載入後會背景檢查是否有新版，有的話頁首提示（離線或失敗時靜默略過）；頁首可開啟版本歷程。\n・數字四捨五入統一為「半數遠離零」，Python 與 JS 輸出逐位相同。",
+  "notes": "・新增作業模式 --mode {survey,traverse,control}：survey（現況／界址，預設，行為同 0.2.0，不檢查固定解筆數）；traverse（圖根）每測回至少 60 筆固定解（內政部全星系 e-GNSS 界址測量作業探討之建議值，請向主管機關確認）；control（控制點）每測回至少 180 筆固定解（國土測繪中心 e-GNSS 控制測量作業手冊）。所有模式的兩測回時間間隔預設都不檢查（手冊規定間隔無限制）。新增旗標 E1（固定解筆數不足，門檻 min_fixed_epochs）。\n・新增已知加密點連測：--control 匯入加密點成果表，觀測點號相同者為共同點；--transform {auto,shift,helmert,affine,none} 求 e-GNSS 到法定坐標的轉換（1 點平移、2 點以上 4 參數、affine 6 參數需 3 點以上），輸出共同點殘差、尺度 ppm、旋轉秒、多餘觀測數。\n・新增轉換檢核旗標 C1（共同點分量改正數 ≥ 9.8 cm）、C2（點間方位角較差 ≥ 20 秒）、C3（點間水平距相對較差 ≥ 1/20000），依據國土測繪中心 VBS-RTK 辦理加密控制及圖根測量作業手冊。\n・有轉換時，CTL、點位坐標平均值表與已知點檢核（K1）一律使用轉換後的法定坐標；新增 transform.csv、transform_pairs.csv；observations.csv 加最近已知加密點與距離；points.csv 加轉換後 N、E、H。\n・新增每日連測檢查：沒有連測任何加密點的日期會警告（畫面、manifest、stderr）。\n・彙整檔 .xlsx 新增「已知點連測與轉換」工作表；觀測資料彙整表加最近已知加密點與距離欄，A3 說明列補上 E1、C1～C3；手簿表頭註記作業模式與轉換方法。\n・單檔 HTML 同步更新：作業模式、加密點成果表、轉換方法選項，轉換摘要卡與每日連測警告；Python 與 JS 結果逐位相同。",
   "download_url": "https://chenweihanfool.github.io/stonex-rtk-qc/rtkqc.html",
   "page_url": "https://chenweihanfool.github.io/stonex-rtk-qc/"
 }

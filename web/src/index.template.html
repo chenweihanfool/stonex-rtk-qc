@@ -41,6 +41,26 @@
         <input type="file" id="known-input" accept=".csv,.txt">
       </label>
       <span id="known-name" class="hint"></span>
+      <label class="field">作業模式
+        <select id="mode">
+          <option value="survey">現況／界址（survey：不檢查固定解筆數；研究建議界址點 10 筆，可於門檻設定）</option>
+          <option value="traverse">圖根（traverse：每測回至少 60 筆固定解；依內政部全星系 e-GNSS 界址測量作業探討之建議值，請向主管機關確認）</option>
+          <option value="control">控制點（control：每測回至少 180 筆固定解；依國土測繪中心 e-GNSS 控制測量作業手冊）</option>
+        </select>
+      </label>
+      <label class="field">已知加密點成果表 CSV（選填：點號,N,E[,H]；觀測點號相同者為共同點，用來轉換成法定坐標）
+        <input type="file" id="control-input" accept=".csv,.txt">
+      </label>
+      <span id="control-name" class="hint"></span>
+      <label class="field">坐標轉換方法
+        <select id="transform-method">
+          <option value="auto">auto（0 點不轉換、1 點平移、2 點以上 4 參數）</option>
+          <option value="shift">shift（坐標分量平移，≥1 點）</option>
+          <option value="helmert">helmert（4 參數，≥2 點）</option>
+          <option value="affine">affine（6 參數，≥3 點）</option>
+          <option value="none">none（不轉換）</option>
+        </select>
+      </label>
       <label class="field">點號來源
         <select id="id-from">
           <option value="auto">auto（依 NAME／CODE 自動判斷）</option>
@@ -62,6 +82,12 @@
   <section id="results" hidden>
     <h2>摘要</h2>
     <div id="summary" class="summary"></div>
+
+    <div id="transform-section" hidden>
+      <h2>已知點連測與轉換</h2>
+      <div id="transform-card" class="summary"></div>
+      <div id="transform-notes" class="messages"></div>
+    </div>
 
     <h2>點位</h2>
     <div class="table-wrap"><table id="points-table" class="tbl"></table></div>

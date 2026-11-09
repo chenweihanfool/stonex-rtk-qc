@@ -26,6 +26,21 @@ function makeScenario(dir) {
   return { day1: path.join(dir, 'day1.PD'), day2: path.join(dir, 'day2.PD') };
 }
 
+let seq = 0;
+// 以 Python fixture 產生 .PD（control_scenario）與加密點成果表 ctl.csv；only 為只保留的加密點號
+function makeControl(root, opts) {
+  const dir = path.join(root, 'sc' + (seq++));
+  fs.mkdirSync(dir, { recursive: true });
+  const code = 'import sys, json; sys.path.insert(0, "tests"); import make_fixture as mf; ' +
+    'o = json.loads(sys.argv[2]); only = o.pop("only", None); ' +
+    'sc = mf.control_scenario(sys.argv[1], **o); ' +
+    'ctl = {k: v for k, v in sc["control"].items() if only is None or k in only}; ' +
+    'mf.write_control_csv(sys.argv[1] + "/ctl.csv", ctl); print(sc["pd"])';
+  const r = py(['-c', code, dir, JSON.stringify(opts || {})]);
+  if (r.status !== 0) throw new Error('產生加密點情境失敗：' + r.stderr);
+  return { dir, pd: r.stdout.trim(), ctl: path.join(dir, 'ctl.csv') };
+}
+
 function runPython(inputs, outDir, extra) {
   fs.mkdirSync(outDir, { recursive: true });
   const jsonPath = path.join(outDir, 'py.json');
@@ -53,4 +68,4 @@ async function readAll(files, idFrom) {
   return pds;
 }
 
-module.exports = { REPO, PYTHON, py, mkTmp, makeScenario, runPython, loadSql, readAll };
+module.exports = { REPO, PYTHON, py, mkTmp, makeScenario, makeControl, runPython, loadSql, readAll };

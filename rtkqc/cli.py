@@ -9,8 +9,10 @@ from pathlib import Path
 from . import __version__
 from .outputs import build_outputs, ctl_text, result_dict
 from .pdreader import InputError, read_pd
-from .rules import (assign_bases, build_points, load_known, load_thresholds, obs_flags,
-                    row_flags)
+from .rules import (MODES, apply_known, assign_bases, build_points, load_known,
+                    load_thresholds, obs_flags, row_flags)
+from .transform import (METHODS, apply_to_points, compute_transform, control_days,
+                        nearest_controls)
 
 
 def build_parser():
@@ -21,6 +23,15 @@ def build_parser():
     p.add_argument("inputs", nargs="+", metavar="PD", help="一或多個 .PD 檔")
     p.add_argument("--out", required=True, help="輸出資料夾（不存在會建立）")
     p.add_argument("--known", help="已知點 CSV（點號,N,E[,H]）")
+    p.add_argument("--mode", choices=MODES, default="survey",
+                   help="作業模式：survey（現況／界址，預設，不檢查固定解筆數；研究建議界址點 10 筆，"
+                        "可於門檻設定）、traverse（圖根：每測回至少 60 筆固定解，依內政部全星系 e-GNSS "
+                        "界址測量作業探討之建議值，請向主管機關確認）、control（控制點：每測回至少 180 "
+                        "筆固定解，依國土測繪中心 e-GNSS 控制測量作業手冊）")
+    p.add_argument("--control", help="已知加密點成果表 CSV（點號,N,E[,H]）；觀測點號相同者為共同點")
+    p.add_argument("--transform", choices=METHODS, default="auto",
+                   help="坐標轉換方法（需 --control）：auto（0 點不轉換、1 點平移、≥2 點 4 參數，預設）、"
+                        "shift、helmert、affine（≥3 點）、none")
     p.add_argument("--config", help="門檻設定 JSON（覆蓋預設門檻）")
     p.add_argument("--json", metavar="FILE", help="輸出判定結果正規 JSON（JS 對拍契約）")
     p.add_argument("--ctl", metavar="FILE", help="輸出 CTL（點名右靠 8 字元 縱坐標 橫坐標）")
@@ -35,8 +46,9 @@ def main(argv=None):
     args = build_parser().parse_args(raw_argv)
 
     try:
-        th = load_thresholds(args.config)
+        th = load_thresholds(args.config, args.mode)
         known = load_known(args.known) if args.known else None
+        control = load_known(args.control) if args.control else None
         pds = [read_pd(path, args.id_from) for path in args.inputs]
     except InputError as e:
         print(f"錯誤：{e}", file=sys.stderr)
@@ -65,14 +77,27 @@ def main(argv=None):
         o["row_flags"] = row_flags(o, th)
     observations.sort(key=lambda o: (o["id"], o["start"]))
 
-    points = build_points(observations, th, known)
+    points = build_points(observations, th)
+    try:
+        tf = compute_transform(points, control, args.transform, th)
+    except InputError as e:
+        print(f"錯誤：{e}", file=sys.stderr)
+        return 2
+    apply_to_points(points, tf)
+    nearest_controls(observations, control, tf)
+    apply_known(points, th, known)
+    days, days_without = control_days(observations, control)
+    cx = {"mode": args.mode, "control_name": Path(args.control).name if args.control else None,
+          "tf": tf, "control_days": days, "days_without_control": days_without}
+    if days_without:
+        print("警告：以下日期沒有連測任何已知加密點：" + "、".join(days_without), file=sys.stderr)
     run_time = datetime.now().astimezone().isoformat(timespec="seconds")
     known_name = Path(args.known).name if args.known else None
-    files = build_outputs(observations, points, pds, th, raw_argv, run_time, known_name)
+    files = build_outputs(observations, points, pds, th, raw_argv, run_time, known_name, cx)
 
     extra = {}
     if args.json:
-        result = result_dict(observations, points, bases, pds, th, known is not None)
+        result = result_dict(observations, points, bases, pds, th, known is not None, cx)
         extra[Path(args.json)] = (json.dumps(result, ensure_ascii=False, indent=1)
                                   + "\n").encode("utf-8")
     if args.ctl:

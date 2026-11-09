@@ -4,7 +4,7 @@
 var RTKQC = (function () {
 'use strict';
 
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 
 class InputError extends Error {}
 
@@ -18,9 +18,27 @@ const DEFAULT_THRESHOLDS = {
   min_interval_min: 0.0, // 0 = 不檢查
   known_tol_2d: 0.02,
   neighbor_max_m: 100.0,
+  min_fixed_epochs: 0.0, // 每筆觀測至少幾筆 FIXED epoch（0 = 不檢查；依作業模式預設）
+  transform_resid_max: 0.098, // 共同點轉換後坐標分量改正數上限（m）
+  azimuth_diff_max_sec: 20.0, // 共同點間方位角較差上限（秒）
+  distance_ratio_min: 20000.0, // 共同點間水平距相對較差比值分母下限
 };
 
-const FLAG_ORDER = ['X1', 'X2', 'X3', 'X4', 'X5', 'X6', 'F1', 'T1', 'D1', 'K1'];
+// 作業模式覆蓋的預設門檻（--config／UI 設定仍可再覆蓋）
+// 來源：control＝國土測繪中心 e-GNSS 控制測量作業手冊（每測回至少 180 筆固定解，兩測回間隔無限制）；
+// traverse＝內政部全星系 e-GNSS 界址測量作業探討之建議值 60 筆；survey 不檢查（研究建議界址點 10 筆）。
+// 所有模式的 min_interval_min 預設都是 0。
+const MODES = ['survey', 'traverse', 'control'];
+const MODE_DEFAULTS = {
+  survey: {},
+  traverse: { min_fixed_epochs: 60.0 },
+  control: { min_fixed_epochs: 180.0 },
+};
+const MODE_LABEL = {
+  survey: '現況／界址（survey）', traverse: '圖根（traverse）', control: '控制點（control）',
+};
+
+const FLAG_ORDER = ['X1', 'X2', 'X3', 'X4', 'X5', 'X6', 'F1', 'T1', 'E1', 'D1', 'K1', 'C1', 'C2', 'C3'];
 
 const FLAG_DESC = {
   X1: '兩次觀測採相同主站',
@@ -31,8 +49,12 @@ const FLAG_DESC = {
   X6: '僅有一個觀測值',
   F1: '有非固定解（Pos_State 非 FIXED）的 epoch',
   T1: '天線傾斜偏移量達門檻',
+  E1: '固定解筆數不足',
   D1: '兩次觀測時間間隔不足',
   K1: '與已知坐標差距超限',
+  C1: '共同點轉換後坐標分量改正數超限',
+  C2: '共同點間方位角較差超限',
+  C3: '共同點間水平距相對較差超限',
 };
 
 const ACTIONS = {
@@ -44,8 +66,12 @@ const ACTIONS = {
   X6: '補測第二次（建議重連 NTRIP）',
   F1: '等衛星條件改善後重測',
   T1: '重新整平對中後重測',
+  E1: '固定解筆數不足，重測並收足筆數',
   D1: '間隔不足，隔段時間再測',
   K1: '檢查系統偏移與天線高，重測已知點',
+  C1: '檢查該加密點觀測與已知坐標，必要時重測',
+  C2: '檢查相關加密點觀測，必要時重測',
+  C3: '檢查相關加密點觀測，必要時重測',
 };
 
 const EARTH_R = 6378137.0;
@@ -391,8 +417,10 @@ function parseKnownCsv(text, label) {
 }
 
 // 門檻物件驗證（同 Python load_thresholds 的規則）
-function normalizeThresholds(obj) {
-  const th = Object.assign({}, DEFAULT_THRESHOLDS);
+function normalizeThresholds(obj, mode) {
+  mode = mode || 'survey';
+  if (!MODES.includes(mode)) throw new InputError(`未知的作業模式：${mode}`);
+  const th = Object.assign({}, DEFAULT_THRESHOLDS, MODE_DEFAULTS[mode]);
   if (obj === null || obj === undefined) return th;
   if (typeof obj !== 'object' || Array.isArray(obj)) throw new InputError('門檻設定最外層必須是 JSON 物件');
   for (const key of Object.keys(obj)) {
@@ -443,7 +471,8 @@ function obsFlags(o, th) {
   const flags = [];
   if (o.epoch_n > o.fixed_n) flags.push('F1');
   if (o.tilt_off !== null && o.tilt_off >= th.tilt_offset_max) flags.push('T1');
-  return flags;
+  if (th.min_fixed_epochs > 0 && o.fixed_n < th.min_fixed_epochs) flags.push('E1');
+  return FLAG_ORDER.filter((f) => flags.includes(f));
 }
 
 function rowFlags(o, th) {
@@ -470,7 +499,7 @@ function meanOf(vals) {
 
 const byStart = (a, b) => cmp(a.start, b.start);
 
-function summarizePoint(pid, obsIn, th, known) {
+function summarizePoint(pid, obsIn, th) {
   const obs = obsIn.slice().sort(byStart);
   const n = obs.length;
   const pairs = [];
@@ -499,41 +528,294 @@ function summarizePoint(pid, obsIn, th, known) {
   if (n === 1) flags.push('X6');
   if (obs.some((o) => o.obs_flags.includes('F1'))) flags.push('F1');
   if (obs.some((o) => o.obs_flags.includes('T1'))) flags.push('T1');
+  if (obs.some((o) => o.obs_flags.includes('E1'))) flags.push('E1');
   if (n >= 2 && th.min_interval_min > 0 && interval !== null && interval < th.min_interval_min) flags.push('D1');
 
   const avgN = meanOf(obs.map((o) => o.n));
   const avgE = meanOf(obs.map((o) => o.e));
   const avgH = meanOf(obs.map((o) => o.h));
 
-  let knownRow = null;
-  if (known) {
-    const [kn, ke, kh] = known;
-    const dn = avgN - kn;
-    const de = avgE - ke;
-    const d2k = dist2d(dn, de);
-    const dhK = avgH === null || kh === null ? null : avgH - kh;
-    const over = d2k >= th.known_tol_2d;
-    knownRow = { dn, de, d2: d2k, dh: dhK, over };
-    if (over) flags.push('K1');
-  }
-
   return {
     id: pid, obs, n, avg_n: avgN, avg_e: avgE, avg_h: avgH, d2, dh,
     first_start: startsS.length ? minStr(startsS) : '',
     last_end: endsS.length ? maxStr(endsS) : '',
-    interval, flags, known: knownRow,
+    interval, flags, known: null, n_t: null, e_t: null, h_t: null,
   };
 }
 
-function buildPoints(observations, th, knownMap) {
+function buildPoints(observations, th) {
   const groups = new Map();
   for (const o of observations) {
     if (!groups.has(o.id)) groups.set(o.id, []);
     groups.get(o.id).push(o);
   }
   const ids = Array.from(groups.keys()).sort(cmp);
-  return ids.map((pid) => summarizePoint(pid, groups.get(pid), th,
-    knownMap ? knownMap.get(pid) || null : null));
+  return ids.map((pid) => summarizePoint(pid, groups.get(pid), th));
+}
+
+// 點位使用的坐標：有轉換用轉換後 (n_t, e_t, h_t)，否則用平均坐標
+function pointCoord(p) {
+  if (p.n_t !== null && p.n_t !== undefined) return [p.n_t, p.e_t, p.h_t];
+  return [p.avg_n, p.avg_e, p.avg_h];
+}
+
+const sortFlags = (flags) => FLAG_ORDER.filter((f) => flags.includes(f));
+
+// 與已知點（--known）比對：用點位使用的坐標（有轉換用轉換後），超限加 K1
+function applyKnown(points, th, knownMap) {
+  if (!knownMap) return;
+  for (const p of points) {
+    const known = knownMap.get(p.id);
+    if (!known) continue;
+    const [kn, ke, kh] = known;
+    const [cn, ce, ch] = pointCoord(p);
+    const dn = cn - kn;
+    const de = ce - ke;
+    const d2k = dist2d(dn, de);
+    const dhK = ch === null || kh === null ? null : ch - kh;
+    const over = d2k >= th.known_tol_2d;
+    p.known = { dn, de, d2: d2k, dh: dhK, over };
+    if (over) p.flags = sortFlags(p.flags.concat(['K1']));
+  }
+}
+
+/* ---------- 已知加密點連測與坐標轉換（同 rtkqc/transform.py，運算順序逐項相同） ---------- */
+
+const METHODS = ['auto', 'shift', 'helmert', 'affine', 'none'];
+const METHOD_LABEL = {
+  shift: '坐標分量平移', helmert: '4 參數平面轉換', affine: '6 參數平面轉換', none: '不轉換',
+};
+const MIN_POINTS = { shift: 1, helmert: 2, affine: 3 };
+const RAD_TO_SEC = 180.0 / Math.PI * 3600.0;
+
+function solveLinear(m, v) {
+  const n = v.length;
+  const a = m.map((row, i) => row.concat([v[i]]));
+  for (let col = 0; col < n; col++) {
+    let piv = col;
+    let best = Math.abs(a[col][col]);
+    for (let r = col + 1; r < n; r++) {
+      if (Math.abs(a[r][col]) > best) { best = Math.abs(a[r][col]); piv = r; }
+    }
+    if (best < 1e-9) throw new InputError('共同點幾何不足（點位重合或共線），無法求解轉換參數');
+    if (piv !== col) { const t = a[col]; a[col] = a[piv]; a[piv] = t; }
+    for (let r = col + 1; r < n; r++) {
+      const f = a[r][col] / a[col][col];
+      for (let c = col; c <= n; c++) a[r][c] -= f * a[col][c];
+    }
+  }
+  const x = new Array(n).fill(0.0);
+  for (let r = n - 1; r >= 0; r--) {
+    let s = a[r][n];
+    for (let c = r + 1; c < n; c++) s -= a[r][c] * x[c];
+    x[r] = s / a[r][r];
+  }
+  return x;
+}
+
+function chooseMethod(method, nCommon) {
+  if (!METHODS.includes(method)) throw new InputError(`未知的轉換方法：${method}`);
+  if (method === 'auto') return nCommon === 0 ? 'none' : (nCommon === 1 ? 'shift' : 'helmert');
+  if (method === 'none') return 'none';
+  const need = MIN_POINTS[method];
+  if (nCommon < need) throw new InputError(`轉換方法 ${method} 需要至少 ${need} 個共同點，目前只有 ${nCommon} 個`);
+  return method;
+}
+
+// common: [[n_obs, e_obs, n_known, e_known]]
+function fitModel(method, common) {
+  const cn = meanOf(common.map((c) => c[0]));
+  const ce = meanOf(common.map((c) => c[1]));
+  const model = { method, cn, ce };
+  if (method === 'shift') {
+    model.tN = meanOf(common.map((c) => c[2] - c[0]));
+    model.tE = meanOf(common.map((c) => c[3] - c[1]));
+    return model;
+  }
+  if (method === 'helmert') {
+    const m = [0, 1, 2, 3].map(() => [0.0, 0.0, 0.0, 0.0]);
+    const v = [0.0, 0.0, 0.0, 0.0];
+    for (const [no, eo, nk, ek] of common) {
+      const n = no - cn;
+      const e = eo - ce;
+      const sets = [[[n, -e, 1.0, 0.0], nk - cn], [[e, n, 0.0, 1.0], ek - ce]];
+      for (const [row, rhs] of sets) {
+        for (let r = 0; r < 4; r++) {
+          for (let c = 0; c < 4; c++) m[r][c] += row[r] * row[c];
+          v[r] += row[r] * rhs;
+        }
+      }
+    }
+    const [a, b, tn, te] = solveLinear(m, v);
+    model.a = a; model.b = b; model.tN = tn; model.tE = te;
+    model.scale_ppm = (Math.sqrt(a * a + b * b) - 1.0) * 1e6;
+    model.rotation_sec = Math.atan2(b, a) * RAD_TO_SEC;
+    return model;
+  }
+  const mn = [0, 1, 2].map(() => [0.0, 0.0, 0.0]);
+  const me = [0, 1, 2].map(() => [0.0, 0.0, 0.0]);
+  const vn = [0.0, 0.0, 0.0];
+  const ve = [0.0, 0.0, 0.0];
+  for (const [no, eo, nk, ek] of common) {
+    const row = [no - cn, eo - ce, 1.0];
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 3; c++) {
+        mn[r][c] += row[r] * row[c];
+        me[r][c] += row[r] * row[c];
+      }
+      vn[r] += row[r] * (nk - cn);
+      ve[r] += row[r] * (ek - ce);
+    }
+  }
+  const [a1, a2, tn] = solveLinear(mn, vn);
+  const [b1, b2, te] = solveLinear(me, ve);
+  Object.assign(model, { a1, a2, b1, b2, tN: tn, tE: te });
+  return model;
+}
+
+function applyModel(m, n, e) {
+  if (m.method === 'shift') return [n + m.tN, e + m.tE];
+  const nc = n - m.cn;
+  const ec = e - m.ce;
+  if (m.method === 'helmert') {
+    return [m.cn + (m.a * nc - m.b * ec) + m.tN, m.ce + (m.b * nc + m.a * ec) + m.tE];
+  }
+  return [m.cn + (m.a1 * nc + m.a2 * ec) + m.tN, m.ce + (m.b1 * nc + m.b2 * ec) + m.tE];
+}
+
+function wrapPi(d) {
+  if (d > Math.PI) d -= 2.0 * Math.PI;
+  else if (d < -Math.PI) d += 2.0 * Math.PI;
+  return d;
+}
+
+// 以共同點（觀測點號 ∈ 加密點）算轉換與檢核；不轉換時回傳 null
+function computeTransform(points, control, method, th) {
+  const commonPts = points.filter((p) => control && control.has(p.id));
+  method = chooseMethod(method, commonPts.length);
+  if (method === 'none') return null;
+  const nC = commonPts.length;
+  const fitIn = commonPts.map((p) => {
+    const k = control.get(p.id);
+    return [p.avg_n, p.avg_e, k[0], k[1]];
+  });
+  const model = fitModel(method, fitIn);
+  const redundancy = 2 * nC - { shift: 2, helmert: 4, affine: 6 }[method];
+
+  const dhList = [];
+  for (const p of commonPts) {
+    const kh = control.get(p.id)[2];
+    if (kh !== null && p.avg_h !== null) dhList.push(kh - p.avg_h);
+  }
+  const dh = meanOf(dhList);
+
+  const pointFlags = new Map();
+  const addFlag = (id, f) => {
+    if (!pointFlags.has(id)) pointFlags.set(id, new Set());
+    pointFlags.get(id).add(f);
+  };
+  const common = [];
+  for (const p of commonPts) {
+    const [kn, ke, kh] = control.get(p.id);
+    const [nt, et] = applyModel(model, p.avg_n, p.avg_e);
+    let ht;
+    if (p.avg_h === null) ht = null;
+    else ht = dh !== null ? p.avg_h + dh : p.avg_h;
+    const vn = kn - nt;
+    const ve = ke - et;
+    const flags = [];
+    if (Math.abs(vn) >= th.transform_resid_max || Math.abs(ve) >= th.transform_resid_max) {
+      flags.push('C1');
+      addFlag(p.id, 'C1');
+    }
+    common.push({
+      id: p.id, n_obs: p.avg_n, e_obs: p.avg_e, h_obs: p.avg_h,
+      n_known: kn, e_known: ke, h_known: kh, n_t: nt, e_t: et, h_t: ht,
+      vn, ve, v2d: dist2d(vn, ve), flags,
+    });
+  }
+
+  const pairs = [];
+  for (let i = 0; i < common.length; i++) {
+    for (let j = i + 1; j < common.length; j++) {
+      const a = common[i];
+      const b = common[j];
+      const dkn = b.n_known - a.n_known;
+      const dke = b.e_known - a.e_known;
+      const dtn = b.n_t - a.n_t;
+      const dte = b.e_t - a.e_t;
+      const azK = Math.atan2(dke, dkn);
+      const azT = Math.atan2(dte, dtn);
+      const azSec = Math.abs(wrapPi(azT - azK) * RAD_TO_SEC);
+      const dK = dist2d(dkn, dke);
+      const dT = dist2d(dtn, dte);
+      const diff = Math.abs(dT - dK);
+      const flags = [];
+      if (azSec >= th.azimuth_diff_max_sec) flags.push('C2');
+      if (dK > 0 && diff * th.distance_ratio_min >= dK) flags.push('C3');
+      for (const f of flags) { addFlag(a.id, f); addFlag(b.id, f); }
+      pairs.push({
+        i: a.id, j: b.id, az_diff_sec: azSec, d_known: dK, d_t: dT,
+        ratio_den: diff !== 0 ? dK / diff : null, flags,
+      });
+    }
+  }
+
+  const notes = [];
+  if (redundancy === 0) notes.push('無多餘觀測，殘差無檢核意義');
+  if (dh === null) notes.push('高程未轉換（加密點或觀測缺少高程）');
+  return { model, method, n_common: nC, redundancy, dh, common, pairs, note: notes.join('；'), point_flags: pointFlags };
+}
+
+// 替每個點位加上轉換後坐標 n_t/e_t/h_t，並把 C1～C3 掛到相關點位旗標
+function applyToPoints(points, tf) {
+  if (tf === null) return;
+  for (const p of points) {
+    const [nt, et] = applyModel(tf.model, p.avg_n, p.avg_e);
+    p.n_t = nt;
+    p.e_t = et;
+    if (p.avg_h === null) p.h_t = null;
+    else p.h_t = tf.dh !== null ? p.avg_h + tf.dh : p.avg_h;
+    const extra = tf.point_flags.get(p.id);
+    if (extra) p.flags = sortFlags(Array.from(new Set(p.flags.concat(Array.from(extra)))));
+  }
+}
+
+// 每筆觀測找最近的加密點（用轉換後坐標；無轉換用原坐標）
+function nearestControls(observations, control, tf) {
+  const ids = control ? Array.from(control.keys()).sort(cmp) : [];
+  const model = tf !== null ? tf.model : null;
+  for (const o of observations) {
+    o.nearest_control = null;
+    o.nearest_control_dist = null;
+    if (!ids.length) continue;
+    const [n, e] = model !== null ? applyModel(model, o.n, o.e) : [o.n, o.e];
+    for (const cid of ids) {
+      const k = control.get(cid);
+      const d = dist2d(n - k[0], e - k[1]);
+      if (o.nearest_control_dist === null || d < o.nearest_control_dist) {
+        o.nearest_control = cid;
+        o.nearest_control_dist = d;
+      }
+    }
+  }
+}
+
+// 每日連測檢查：回傳 [control_days, days_without_control]
+function controlDaysOf(observations, control) {
+  if (!control) return [[], []];
+  const days = new Map();
+  for (const o of observations) {
+    if (!o.start) continue;
+    const d = o.start.slice(0, 10);
+    if (!days.has(d)) days.set(d, new Set());
+    if (control.has(o.id)) days.get(d).add(o.id);
+  }
+  const keys = Array.from(days.keys()).sort(cmp);
+  return [
+    keys.map((d) => ({ date: d, control_points: Array.from(days.get(d)).sort(cmp) })),
+    keys.filter((d) => days.get(d).size === 0),
+  ];
 }
 
 function assignBases(observations, th) {
@@ -617,7 +899,34 @@ function remeasureActions(flags) {
 
 /* ---------- 正規 JSON ---------- */
 
-function buildResult(observations, points, bases, pds, th) {
+function transformJson(tf) {
+  if (tf === null) return null;
+  const m = tf.model;
+  const params = { tN: rnd(m.tN, 4), tE: rnd(m.tE, 4) };
+  if (m.method === 'helmert') {
+    Object.assign(params, { a: rnd(m.a, 12), b: rnd(m.b, 12), scale_ppm: rnd(m.scale_ppm, 3),
+      rotation_sec: rnd(m.rotation_sec, 3) });
+  } else if (m.method === 'affine') {
+    Object.assign(params, { a1: rnd(m.a1, 12), a2: rnd(m.a2, 12), b1: rnd(m.b1, 12), b2: rnd(m.b2, 12) });
+  }
+  const common = tf.common.map((c) => ({
+    id: c.id,
+    n_obs: rnd(c.n_obs, 3), e_obs: rnd(c.e_obs, 3), h_obs: rnd(c.h_obs, 3),
+    n_known: rnd(c.n_known, 3), e_known: rnd(c.e_known, 3), h_known: rnd(c.h_known, 3),
+    n_t: rnd(c.n_t, 3), e_t: rnd(c.e_t, 3), h_t: rnd(c.h_t, 3),
+    vn: rnd(c.vn, 4), ve: rnd(c.ve, 4), v2d: rnd(c.v2d, 4), flags: c.flags.slice(),
+  }));
+  const pairs = tf.pairs.map((x) => ({
+    i: x.i, j: x.j, az_diff_sec: rnd(x.az_diff_sec, 2), d_known: rnd(x.d_known, 3),
+    d_t: rnd(x.d_t, 3), ratio_den: rnd(x.ratio_den, 0), flags: x.flags.slice(),
+  }));
+  return {
+    method: tf.method, n_common: tf.n_common, redundancy: tf.redundancy, params,
+    centroid: { n: rnd(m.cn, 3), e: rnd(m.ce, 3) }, dh: rnd(tf.dh, 4), common, pairs, note: tf.note,
+  };
+}
+
+function buildResult(observations, points, bases, pds, th, cx) {
   const obs = observations.map((o) => ({
     source: o.source, id: o.id, name: o.name, code: o.code,
     n: rnd(o.n, 3), e: rnd(o.e, 3), h: rnd(o.h, 3),
@@ -631,6 +940,7 @@ function buildResult(observations, points, bases, pds, th) {
     dist_base: rnd(o.dist_base, 3), ant_h: rnd(o.ant_h, 3),
     pitch: rnd(o.pitch, 2), roll: rnd(o.roll, 2), tilt_off: rnd(o.tilt_off, 4),
     flags: o.obs_flags.slice(), row_flags: o.row_flags.slice(),
+    nearest_control: o.nearest_control, nearest_control_dist: rnd(o.nearest_control_dist, 3),
   }));
   const pts = points.map((p) => ({
     id: p.id, count: p.n,
@@ -638,6 +948,7 @@ function buildResult(observations, points, bases, pds, th) {
     d2: rnd(p.d2, 4), dh: rnd(p.dh, 4),
     first_start: p.first_start, last_end: p.last_end,
     interval_min: rnd(p.interval, 2), flags: p.flags.slice(),
+    n_t: rnd(p.n_t, 3), e_t: rnd(p.e_t, 3), h_t: rnd(p.h_t, 3),
   }));
   const baseList = bases.map((b) => ({
     label: b.label, base_id: b.base_id, lat: rnd(b.lat, 8), lon: rnd(b.lon, 8),
@@ -667,16 +978,24 @@ function buildResult(observations, points, bases, pds, th) {
     neighbors,
     remeasure,
     known_check: known,
+    mode: cx.mode,
+    transform: transformJson(cx.tf),
+    control_days: cx.controlDays.map((d) => ({ date: d.date, control_points: d.control_points.slice() })),
+    days_without_control: cx.daysWithoutControl.slice(),
   };
 }
 
 /**
  * 分析一組已讀入的 .PD。
- * opts: { pds, thresholds, known (Map|null), knownName }
- * 回傳 { th, pds(去重後), warnings, observations, points, bases, result, knownName }
+ * opts: { pds, thresholds, known (Map|null), knownName, mode ('survey'|'traverse'|'control'),
+ *        control (Map|null)、controlName、transform ('auto'|'shift'|'helmert'|'affine'|'none') }
+ * 回傳 { th, pds(去重後), warnings, observations, points, bases, result, knownName, mode, tf,
+ *        controlName, controlDays, daysWithoutControl }
+ * 轉換條件不足（例如 affine 少於 3 點）時丟出 InputError。
  */
 function analyze(opts) {
-  const th = normalizeThresholds(opts.thresholds);
+  const mode = opts.mode || 'survey';
+  const th = normalizeThresholds(opts.thresholds, mode);
   const warnings = [];
   const seen = new Map();
   const unique = [];
@@ -698,9 +1017,22 @@ function analyze(opts) {
   observations.sort((a, b) => cmp(a.id, b.id) || cmp(a.start, b.start));
 
   const known = opts.known || null;
-  const points = buildPoints(observations, th, known);
-  const result = buildResult(observations, points, bases, unique, th);
-  return { th, pds: unique, warnings, observations, points, bases, result, knownName: opts.knownName || null };
+  const control = opts.control || null;
+  const points = buildPoints(observations, th);
+  const tf = computeTransform(points, control, opts.transform || 'auto', th);
+  applyToPoints(points, tf);
+  nearestControls(observations, control, tf);
+  applyKnown(points, th, known);
+  const [controlDays, daysWithoutControl] = controlDaysOf(observations, control);
+  if (daysWithoutControl.length) {
+    warnings.push('警告：以下日期沒有連測任何已知加密點：' + daysWithoutControl.join('、'));
+  }
+  const cx = { mode, tf, controlDays, daysWithoutControl };
+  const result = buildResult(observations, points, bases, unique, th, cx);
+  return {
+    th, pds: unique, warnings, observations, points, bases, result, knownName: opts.knownName || null,
+    mode, tf, controlName: control ? (opts.controlName || null) : null, controlDays, daysWithoutControl,
+  };
 }
 
 /* ---------- 輸出 ---------- */
@@ -716,6 +1048,14 @@ const POINT_HEADER = [
   '點號', '觀測數', '平均N', '平均E', '平均H', '兩次較差2D(m)', '高程較差(m)',
   '最早觀測時間', '最晚觀測時間', '兩次觀測時間間隔(分鐘)', '旗標',
 ];
+const OBS_CONTROL_HEADER = ['最近已知加密點', '距最近加密點(m)'];
+const POINT_TRANSFORM_HEADER = ['轉換後N', '轉換後E', '轉換後H'];
+const TRANSFORM_HEADER = [
+  '點號', '觀測N', '觀測E', '觀測H', '已知N', '已知E', '已知H', '轉換後N', '轉換後E',
+  '轉換後H', 'vN', 'vE', 'v2D', '旗標',
+];
+const PAIRS_HEADER = ['點號i', '點號j', '方位角較差(秒)', '已知距離(m)', '轉換後距離(m)',
+  '相對較差比值分母', '旗標'];
 const REMEASURE_HEADER = ['點號', '旗標', '建議動作', '平均N', '平均E'];
 const KNOWN_HEADER = ['點號', 'dN', 'dE', 'd2D', 'dH', '是否超限'];
 
@@ -729,8 +1069,9 @@ function csvText(header, rows) {
   return '\ufeff' + lines.join('\r\n') + '\r\n';
 }
 
-function observationRows(observations) {
-  return observations.map((o) => [
+function observationRows(observations, controlGiven) {
+  return observations.map((o) => {
+    const row = [
     o.source, o.id, o.name, o.code,
     fmt(o.n, 3), fmt(o.e, 3), fmt(o.h, 3),
     o.start, o.end, o.epoch_n, o.fixed_n,
@@ -743,14 +1084,37 @@ function observationRows(observations) {
     fmt(o.dist_base, 3), fmt(o.ant_h, 3),
     fmt(o.pitch, 2), fmt(o.roll, 2), fmt(o.tilt_off, 4),
     o.obs_flags.join(';'),
+    ];
+    if (controlGiven) row.push(o.nearest_control || '', fmt(o.nearest_control_dist, 3));
+    return row;
+  });
+}
+
+function pointRows(points, withTransform) {
+  return points.map((p) => {
+    const row = [
+      p.id, p.n, fmt(p.avg_n, 3), fmt(p.avg_e, 3), fmt(p.avg_h, 3),
+      fmt(p.d2, 4), fmt(p.dh, 4), p.first_start, p.last_end, fmt(p.interval, 2),
+      p.flags.join(';'),
+    ];
+    if (withTransform) row.push(fmt(p.n_t, 3), fmt(p.e_t, 3), fmt(p.h_t, 3));
+    return row;
+  });
+}
+
+function transformRows(tf) {
+  return tf.common.map((c) => [
+    c.id, fmt(c.n_obs, 3), fmt(c.e_obs, 3), fmt(c.h_obs, 3),
+    fmt(c.n_known, 3), fmt(c.e_known, 3), fmt(c.h_known, 3),
+    fmt(c.n_t, 3), fmt(c.e_t, 3), fmt(c.h_t, 3),
+    fmt(c.vn, 4), fmt(c.ve, 4), fmt(c.v2d, 4), c.flags.join(';'),
   ]);
 }
 
-function pointRows(points) {
-  return points.map((p) => [
-    p.id, p.n, fmt(p.avg_n, 3), fmt(p.avg_e, 3), fmt(p.avg_h, 3),
-    fmt(p.d2, 4), fmt(p.dh, 4), p.first_start, p.last_end, fmt(p.interval, 2),
-    p.flags.join(';'),
+function pairRows(tf) {
+  return tf.pairs.map((x) => [
+    x.i, x.j, fmt(x.az_diff_sec, 2), fmt(x.d_known, 3), fmt(x.d_t, 3),
+    fmt(x.ratio_den, 0), x.flags.join(';'),
   ]);
 }
 
@@ -786,7 +1150,8 @@ function sortedAntennas(pds) {
   return list.sort((a, b) => cmp(a[0], b[0]) || cmp(a[1], b[1]));
 }
 
-function handbookHtml(observations, points, pds, th) {
+function handbookHtml(observations, points, pds, th, mode, tf) {
+  mode = mode || 'survey';
   const dates = Array.from(new Set(observations.filter((o) => o.start).map((o) => o.start.slice(0, 10)))).sort(cmp);
   let dateText = dates.length ? dates.join('、') : '未知';
   if (dates.length > 1) dateText = `${dates[0]} ～ ${dates[dates.length - 1]}（${dates.length} 天）`;
@@ -847,6 +1212,7 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 <div>觀測日期（來源資料）：${esc(dateText)}</div>
 <div>輸入檔名與 sha256 前 12 碼：<ul>${inputs}</ul></div>
 <div>工具版本：rtkqc ${esc(VERSION)}　門檻：平面 HRMS ${esc(pyNum(th.hrms_max))} m／高程 VRMS ${esc(pyNum(th.vrms_max))} m／PDOP ${esc(pyNum(th.pdop_max))}／兩次較差 ${esc(pyNum(th.diff_2d_max))} m</div>
+<div>作業模式：${esc(MODE_LABEL[mode])}　坐標轉換：${esc(METHOD_LABEL[tf ? tf.method : 'none'])}</div>
 </div>
 <table>
 <thead>
@@ -877,6 +1243,12 @@ function manifestObject(an, argv, runTime) {
     argv,
     thresholds: an.th,
     known_file: an.knownName,
+    mode: an.mode,
+    control_file: an.controlName,
+    transform: an.tf === null ? null : {
+      method: an.tf.method, n_common: an.tf.n_common, redundancy: an.tf.redundancy,
+    },
+    days_without_control: an.daysWithoutControl.slice(),
     inputs: an.pds.map((pd) => ({
       name: pd.name, size: pd.size, sha256: pd.sha256,
       observations: an.observations.filter((o) => o.source === pd.name).length,
@@ -893,19 +1265,27 @@ function ctlText(points) {
   return points.map((p) => {
     const id = String(p.id);
     const pad = Math.max(0, 8 - Array.from(id).length);
-    return ' '.repeat(pad) + id + ' ' + fmt(p.avg_n, 3) + ' ' + fmt(p.avg_e, 3) + '\r\n';
+    const [n, e] = pointCoord(p);
+    return ' '.repeat(pad) + id + ' ' + fmt(n, 3) + ' ' + fmt(e, 3) + '\r\n';
   }).join('');
 }
 
 /** 產生所有文字輸出，回傳 { 檔名: 字串 }（CSV 以 BOM 開頭）。 */
 function textOutputs(an, runTime, argv) {
+  const controlGiven = an.controlName !== null;
   const files = {
-    'observations.csv': csvText(OBS_HEADER, observationRows(an.observations)),
-    'points.csv': csvText(POINT_HEADER, pointRows(an.points)),
+    'observations.csv': csvText(controlGiven ? OBS_HEADER.concat(OBS_CONTROL_HEADER) : OBS_HEADER,
+      observationRows(an.observations, controlGiven)),
+    'points.csv': csvText(an.tf ? POINT_HEADER.concat(POINT_TRANSFORM_HEADER) : POINT_HEADER,
+      pointRows(an.points, an.tf !== null)),
     'remeasure.csv': csvText(REMEASURE_HEADER, remeasureRows(an.points)),
-    'handbook.html': handbookHtml(an.observations, an.points, an.pds, an.th),
+    'handbook.html': handbookHtml(an.observations, an.points, an.pds, an.th, an.mode, an.tf),
   };
   if (an.knownName !== null) files['known_check.csv'] = csvText(KNOWN_HEADER, knownRows(an.points));
+  if (an.tf) {
+    files['transform.csv'] = csvText(TRANSFORM_HEADER, transformRows(an.tf));
+    files['transform_pairs.csv'] = csvText(PAIRS_HEADER, pairRows(an.tf));
+  }
   files['manifest.json'] = JSON.stringify(manifestObject(an, argv || ['rtkqc.html'], runTime), null, 2) + '\n';
   files['control.ctl'] = ctlText(an.points);
   return files;
@@ -927,10 +1307,11 @@ function compareVersions(a, b) {
 }
 
 const api = {
-  VERSION, InputError, DEFAULT_THRESHOLDS, FLAG_ORDER, FLAG_DESC, ACTIONS,
+  VERSION, InputError, DEFAULT_THRESHOLDS, MODES, MODE_DEFAULTS, MODE_LABEL, METHODS, METHOD_LABEL,
+  FLAG_ORDER, FLAG_DESC, ACTIONS, pointCoord,
   roundStr, rnd, fmt, pyNum, lonlatToTm2: TM, readPD, parseKnownCsv, normalizeThresholds,
   analyze, compareVersions, csvText, ctlText, handbookHtml, manifestObject, textOutputs, sha256Hex, sortedAntennas,
-  OBS_HEADER, POINT_HEADER, REMEASURE_HEADER, KNOWN_HEADER,
+  OBS_HEADER, POINT_HEADER, REMEASURE_HEADER, KNOWN_HEADER, TRANSFORM_HEADER, PAIRS_HEADER,
 };
 return api;
 })();

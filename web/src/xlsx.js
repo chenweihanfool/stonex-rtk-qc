@@ -193,8 +193,71 @@ const H = (v) => ({ v, s: ST.HEADER });
 const T = (v) => ({ v, s: ST.TEXT });
 const N3 = (v) => ({ v, s: ST.N3 });
 
-const POINT_LEVEL_FLAGS = ['X1', 'X5', 'X6', 'D1', 'K1'];
-const FLAG_ORDER = ['X1', 'X2', 'X3', 'X4', 'X5', 'X6', 'F1', 'T1', 'D1', 'K1'];
+const POINT_LEVEL_FLAGS = ['X1', 'X5', 'X6', 'D1', 'K1', 'C1', 'C2', 'C3'];
+const FLAG_ORDER = ['X1', 'X2', 'X3', 'X4', 'X5', 'X6', 'F1', 'T1', 'E1', 'D1', 'K1', 'C1', 'C2', 'C3'];
+const METHOD_LABEL = {
+  shift: '坐標分量平移', helmert: '4 參數平面轉換', affine: '6 參數平面轉換', none: '不轉換',
+};
+const MODE_LABEL = {
+  survey: '現況／界址（survey）', traverse: '圖根（traverse）', control: '控制點（control）',
+};
+const N4 = (v) => ({ v, s: ST.N4 });
+const N2 = (v) => ({ v, s: ST.N2 });
+
+// 「已知點連測與轉換」工作表：上方參數與檢核標準、中段共同點殘差、下段兩兩（方位角／邊長）檢核
+function controlSheet(result) {
+  const tf = result.transform || null;
+  const th = result.thresholds || {};
+  const resid = th.transform_resid_max === undefined ? 0.098 : th.transform_resid_max;
+  const azMax = th.azimuth_diff_max_sec === undefined ? 20 : th.azimuth_diff_max_sec;
+  const ratioMin = th.distance_ratio_min === undefined ? 20000 : th.distance_ratio_min;
+  const rows = [[{ v: '已知點連測與轉換', s: ST.BOLD }]];
+  const kv = (k, v) => rows.push([T(k), typeof v === 'object' && v !== null ? v : T(v)]);
+  kv('作業模式', MODE_LABEL[result.mode] || String(result.mode || ''));
+  kv('轉換方法', tf ? METHOD_LABEL[tf.method] : '不轉換（沒有共同點，或指定不轉換）');
+  if (tf) {
+    kv('共同點數', { v: tf.n_common, s: ST.INT });
+    kv('多餘觀測數', { v: tf.redundancy, s: ST.INT });
+    const pr = tf.params;
+    kv('tN（重心處平移，m）', N4(pr.tN));
+    kv('tE（重心處平移，m）', N4(pr.tE));
+    if (tf.method === 'helmert') {
+      kv('尺度（ppm）', N3(pr.scale_ppm));
+      kv('旋轉（秒）', N3(pr.rotation_sec));
+      kv('a（尺度×cos 旋轉角）', pr.a.toFixed(12));
+      kv('b（尺度×sin 旋轉角）', pr.b.toFixed(12));
+    } else if (tf.method === 'affine') {
+      for (const k of ['a1', 'a2', 'b1', 'b2']) kv(k, pr[k].toFixed(12));
+    }
+    kv('重心坐標 N、E（觀測，m）', T(tf.centroid.n.toFixed(3) + '、' + tf.centroid.e.toFixed(3)));
+    kv('高程處理', tf.dh === null || tf.dh === undefined
+      ? '高程未轉換（加密點或觀測缺少高程）'
+      : '平均高程差 dH = ' + tf.dh.toFixed(4) + ' m（轉換後高程＝觀測高程＋dH）');
+    if (tf.note) kv('註記', tf.note);
+  }
+  kv('檢核標準', '共同點坐標分量改正數 < ' + (resid * 100).toFixed(1) + ' cm；共同點間方位角較差 < ' + azMax +
+    ' 秒；水平距相對較差 < 1/' + ratioMin + '（依國土測繪中心 VBS-RTK 辦理加密控制及圖根測量作業手冊）');
+  const missing = result.days_without_control || [];
+  kv('未連測已知加密點的日期', missing.length ? missing.join('、') : '無');
+  if (tf) {
+    rows.push([]);
+    rows.push([{ v: '共同點殘差（已知 − 轉換後）', s: ST.BOLD }]);
+    rows.push(['點號', '觀測N', '觀測E', '觀測H', '已知N', '已知E', '已知H', '轉換後N', '轉換後E', '轉換後H',
+      'vN(m)', 'vE(m)', 'v2D(m)', '檢核'].map(H));
+    for (const c of tf.common) {
+      rows.push([T(c.id), N3(c.n_obs), N3(c.e_obs), N3(c.h_obs), N3(c.n_known), N3(c.e_known), N3(c.h_known),
+        N3(c.n_t), N3(c.e_t), N3(c.h_t), N4(c.vn), N4(c.ve), N4(c.v2d), T(c.flags.length ? c.flags.join(',') : 'OK')]);
+    }
+    rows.push([]);
+    rows.push([{ v: '共同點間方位角與邊長檢核', s: ST.BOLD }]);
+    rows.push(['點號i', '點號j', '方位角較差(秒)', '已知距離(m)', '轉換後距離(m)', '相對較差比值分母', '檢核'].map(H));
+    for (const x of tf.pairs) {
+      rows.push([T(x.i), T(x.j), N2(x.az_diff_sec), N3(x.d_known), N3(x.d_t),
+        { v: x.ratio_den, s: ST.INT }, T(x.flags.length ? x.flags.join(',') : 'OK')]);
+    }
+  }
+  return { name: '已知點連測與轉換', cols: [26, 15, 15, 15, 15, 15, 12, 15, 15, 12, 11, 11, 11, 10], rows };
+}
 
 function baseNote(bases) {
   const ok = bases.filter((b) => b.grid_corrected);
@@ -219,8 +282,9 @@ function neighborFormulas(r) {
 }
 
 /**
- * 依正規 JSON 結果組出 7（或 6）張工作表規格。
- * ctx: { antennas: [[編號, 型號]...], sources: [檔名...], runTime: '產製時間字串', version }
+ * 依正規 JSON 結果組出 6～8 張工作表規格（有已知點檢核＋有加密點連測時最多 8 張）。
+ * ctx: { antennas: [[編號, 型號]...], sources: [檔名...], runTime: '產製時間字串', version,
+ *        hasKnown（有 --known）, hasControl（有 --control：多「已知點連測與轉換」表與觀測表 N、O 欄）}
  */
 function buildSheets(result, ctx) {
   const sheets = [];
@@ -245,12 +309,15 @@ function buildSheets(result, ctx) {
   const obs = [
     [{ v: 'RTK圖根測量觀測資料彙整表', s: ST.BOLD }],
     [`來源：${ctx.sources.join('、')}　產製：${ctx.runTime}　rtkqc ${ctx.version}`],
-    ['F1：表有非固定解 epoch。　T1：表桿傾斜偏移未小於1cm。　D1：表兩次觀測間隔不足。　K1：表與已知點較差超限。'],
+    ['F1：表有非固定解 epoch。　T1：表桿傾斜偏移未小於1cm。　D1：表兩次觀測間隔不足。　K1：表與已知點較差超限。' +
+      '　E1：表固定解筆數不足。　C1：表共同點轉換後坐標分量改正數超限。　C2：表共同點間方位角較差超限。' +
+      '　C3：表共同點間水平距相對較差超限。'],
     ['備註欄說明', null, 'X1：表兩次觀測採相同主站。', null, 'X2:表固定解平面誤差未小於2cm。', null, null, null,
       'X3：表固定解高程誤差未小於5cm。'],
     [null, null, 'X4：表PDOP值未小於10。', null, 'X5：表兩次較差未小於2cm', null, null, 'X6:表僅有一個觀測值'],
     ['主站點名', '測站點名', '縱坐標(m)', '橫坐標(m)', '高程坐標(m)', '固定解平面誤差(m)', '固定解高程誤差(m)',
-      'PDOP值', '兩次觀測較差(m)', '主站與移動站距離', '備註', '觀測時間', 'epoch數'].map(H),
+      'PDOP值', '兩次觀測較差(m)', '主站與移動站距離', '備註', '觀測時間', 'epoch數']
+      .concat(ctx.hasControl ? ['最近已知加密點', '距離(m)'] : []).map(H),
   ];
   for (const o of result.observations) {
     const p = byId.get(o.id);
@@ -261,13 +328,26 @@ function buildSheets(result, ctx) {
       T(o.base_label), T(o.id), N3(o.n), N3(o.e), N3(o.h), N3(o.hrms), N3(o.vrms),
       { v: o.pdop, s: ST.N1 }, N3(p && p.count >= 2 ? p.d2 : null), N3(o.dist_base),
       T(note), T(o.start), { v: o.epoch_n, s: ST.INT },
-    ]);
+    ].concat(ctx.hasControl ? [T(o.nearest_control || ''), N3(o.nearest_control_dist)] : []));
   }
-  sheets.push({ name: '觀測資料彙整表', cols: [10, 11, 13, 13, 13, 13, 13, 9, 10.5, 11.5, 14, 18, 8], rows: obs });
+  sheets.push({
+    name: '觀測資料彙整表',
+    cols: [10, 11, 13, 13, 13, 13, 13, 9, 10.5, 11.5, 14, 18, 8].concat(ctx.hasControl ? [16, 11] : []),
+    rows: obs,
+  });
 
   // 4. 點位坐標平均值表
   const pts = [['點名', '縱坐標', '橫坐標', '高程坐標', '備註'].map(H)];
-  for (const p of result.points) pts.push([T(p.id), N3(p.avg_n), N3(p.avg_e), N3(p.avg_h), T(p.flags.join(','))]);
+  const tfm = result.transform || null;
+  for (const p of result.points) {
+    const conv = tfm && p.n_t !== null && p.n_t !== undefined;
+    pts.push([T(p.id), N3(conv ? p.n_t : p.avg_n), N3(conv ? p.e_t : p.avg_e), N3(conv ? p.h_t : p.avg_h),
+      T(p.flags.join(','))]);
+  }
+  if (tfm) {
+    pts.push([]);
+    pts.push(['坐標已由 e-GNSS 以 ' + METHOD_LABEL[tfm.method] + ' 轉換為法定坐標']);
+  }
   sheets.push({ name: '點位坐標平均值表', cols: [12, 15, 15, 15, 18], rows: pts });
 
   // 5. 相鄰點位檢核表（D 留空，E/F/G 為公式）
@@ -278,6 +358,9 @@ function buildSheets(result, ctx) {
       { f: f.E, s: ST.N2 }, { f: f.F, s: ST.INT }, { f: f.G, s: ST.TEXT }]);
   });
   sheets.push({ name: '相鄰點位檢核表', cols: [12, 12, 17, 17, 11, 14, 30], rows: nb });
+
+  // 5b. 已知點連測與轉換（只在有加密點成果表時）
+  if (ctx.hasControl) sheets.push(controlSheet(result));
 
   // 6. 隔天重測清單
   const rem = [['點號', '旗標', '建議動作', '平均N', '平均E'].map(H)];
@@ -290,6 +373,10 @@ function buildSheets(result, ctx) {
     for (const k of result.known_check) {
       kn.push([T(k.id), { v: k.dn, s: ST.N4 }, { v: k.de, s: ST.N4 }, { v: k.d2, s: ST.N4 },
         { v: k.dh, s: ST.N4 }, T(k.over ? '是' : '否')]);
+    }
+    if (result.transform) {
+      kn.push([]);
+      kn.push(['比對坐標：已轉換（' + METHOD_LABEL[result.transform.method] + '）後的法定坐標']);
     }
     sheets.push({ name: '已知點檢核', cols: [12, 11, 11, 11, 11, 11], rows: kn });
   }

@@ -105,7 +105,7 @@ class TestScenario(ScenarioTest):
     def test_manifest_contents(self):
         with open(os.path.join(self.out, "manifest.json"), encoding="utf-8") as f:
             m = json.load(f)
-        self.assertEqual(m["version"], "0.2.0")
+        self.assertEqual(m["version"], "0.3.0")
         self.assertEqual(m["point_count"], 12)
         self.assertEqual(m["observation_count"], 22)
         self.assertEqual(m["flag_stats"]["X6"], 2)
@@ -247,8 +247,8 @@ class TestErrors(unittest.TestCase):
         proc = subprocess.run([sys.executable, "-m", "rtkqc", "--version"],
                               cwd=REPO, capture_output=True, env=dict(os.environ, PYTHONUTF8="1"))
         self.assertEqual(proc.returncode, 0)
-        self.assertEqual(proc.stdout.decode("utf-8").strip(), "0.2.0")
-        self.assertEqual(__version__, "0.2.0")
+        self.assertEqual(proc.stdout.decode("utf-8").strip(), "0.3.0")
+        self.assertEqual(__version__, "0.3.0")
 
 
 if __name__ == "__main__":

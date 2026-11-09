@@ -109,7 +109,8 @@ class TestJsonContract(JsonBase):
         self.assertEqual(self.code, 0, self.err)
         self.assertEqual(list(self.r), ["version", "thresholds", "inputs", "observations",
                                         "points", "bases", "neighbors", "remeasure",
-                                        "known_check"])
+                                        "known_check", "mode", "transform", "control_days",
+                                        "days_without_control"])
         self.assertEqual(self.r["version"], __version__)
         self.assertEqual(self.r["thresholds"]["neighbor_max_m"], 100.0)
 
