@@ -10,7 +10,10 @@ import json
 
 from . import __version__
 from .rules import (ACTIONS, FLAG_DESC, FLAG_ORDER, find_neighbors, fmt, pair_2d,
-                    remeasure_rows, rnd)
+                    point_coord, remeasure_rows, rnd)
+from .transform import METHOD_LABEL
+
+MODE_LABEL = {"survey": "現況／界址（survey）", "control": "圖根（control）"}
 
 OBS_HEADER = [
     "來源檔名", "點號", "NAME", "CODE", "N", "E", "H", "開始時間", "結束時間",
@@ -25,6 +28,15 @@ POINT_HEADER = [
     "最早觀測時間", "最晚觀測時間", "兩次觀測時間間隔(分鐘)", "旗標",
 ]
 
+OBS_CONTROL_HEADER = ["最近已知加密點", "距最近加密點(m)"]
+POINT_TRANSFORM_HEADER = ["轉換後N", "轉換後E", "轉換後H"]
+TRANSFORM_HEADER = [
+    "點號", "觀測N", "觀測E", "觀測H", "已知N", "已知E", "已知H", "轉換後N", "轉換後E",
+    "轉換後H", "vN", "vE", "v2D", "旗標",
+]
+PAIRS_HEADER = ["點號i", "點號j", "方位角較差(秒)", "已知距離(m)", "轉換後距離(m)",
+                "相對較差比值分母", "旗標"]
+
 REMEASURE_HEADER = ["點號", "旗標", "建議動作", "平均N", "平均E"]
 
 KNOWN_HEADER = ["點號", "dN", "dE", "d2D", "dH", "是否超限"]
@@ -38,10 +50,10 @@ def _csv_bytes(header, rows):
     return buf.getvalue().encode("utf-8-sig")
 
 
-def observation_rows(observations):
+def observation_rows(observations, control_given=False):
     rows = []
     for o in observations:
-        rows.append([
+        row = [
             o["source"], o["id"], o["name"], o["code"],
             fmt(o["n"], 3), fmt(o["e"], 3), fmt(o["h"], 3),
             o["start"], o["end"], o["epoch_n"], o["fixed_n"],
@@ -55,20 +67,40 @@ def observation_rows(observations):
             fmt(o["dist_base"], 3), fmt(o["ant_h"], 3),
             fmt(o["pitch"], 2), fmt(o["roll"], 2), fmt(o["tilt_off"], 4),
             ";".join(o["obs_flags"]),
-        ])
+        ]
+        if control_given:
+            row.extend([o["nearest_control"] or "", fmt(o["nearest_control_dist"], 3)])
+        rows.append(row)
     return rows
 
 
-def point_rows(points):
+def point_rows(points, with_transform=False):
     rows = []
     for p in points:
-        rows.append([
+        row = [
             p["id"], p["n"], fmt(p["avg_n"], 3), fmt(p["avg_e"], 3),
             fmt(p["avg_h"], 3), fmt(p["d2"], 4), fmt(p["dh"], 4),
             p["first_start"], p["last_end"], fmt(p["interval"], 2),
             ";".join(p["flags"]),
-        ])
+        ]
+        if with_transform:
+            row.extend([fmt(p["n_t"], 3), fmt(p["e_t"], 3), fmt(p["h_t"], 3)])
+        rows.append(row)
     return rows
+
+
+def transform_rows(tf):
+    return [[c["id"], fmt(c["n_obs"], 3), fmt(c["e_obs"], 3), fmt(c["h_obs"], 3),
+             fmt(c["n_known"], 3), fmt(c["e_known"], 3), fmt(c["h_known"], 3),
+             fmt(c["n_t"], 3), fmt(c["e_t"], 3), fmt(c["h_t"], 3),
+             fmt(c["vn"], 4), fmt(c["ve"], 4), fmt(c["v2d"], 4), ";".join(c["flags"])]
+            for c in tf["common"]]
+
+
+def pair_rows(tf):
+    return [[x["i"], x["j"], fmt(x["az_diff_sec"], 2), fmt(x["d_known"], 3), fmt(x["d_t"], 3),
+             fmt(x["ratio_den"], 0), ";".join(x["flags"])]
+            for x in tf["pairs"]]
 
 
 def known_rows(points):
@@ -88,7 +120,7 @@ def _esc(v):
     return html.escape("" if v is None else str(v), quote=True)
 
 
-def handbook_html(observations, points, pds, th):
+def handbook_html(observations, points, pds, th, mode="survey", tf=None):
     dates = sorted({o["start"][:10] for o in observations if o["start"]})
     date_text = "、".join(dates) if dates else "未知"
     if dates and len(dates) > 1:
@@ -155,6 +187,7 @@ td.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
 <div>觀測日期（來源資料）：{_esc(date_text)}</div>
 <div>輸入檔名與 sha256 前 12 碼：<ul>{inputs}</ul></div>
 <div>工具版本：rtkqc {_esc(__version__)}　門檻：平面 HRMS {_esc(th['hrms_max'])} m／高程 VRMS {_esc(th['vrms_max'])} m／PDOP {_esc(th['pdop_max'])}／兩次較差 {_esc(th['diff_2d_max'])} m</div>
+<div>作業模式：{_esc(MODE_LABEL[mode])}　坐標轉換：{_esc(METHOD_LABEL[tf['method']] if tf else METHOD_LABEL['none'])}</div>
 </div>
 <table>
 <thead>
@@ -174,7 +207,7 @@ td.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
 """
 
 
-def manifest_dict(args_argv, run_time, th, pds, observations, points, known_name):
+def manifest_dict(args_argv, run_time, th, pds, observations, points, known_name, cx):
     flag_stats = {f: 0 for f in FLAG_ORDER}
     for p in points:
         for f in p["flags"]:
@@ -186,6 +219,13 @@ def manifest_dict(args_argv, run_time, th, pds, observations, points, known_name
         "argv": args_argv,
         "thresholds": th,
         "known_file": known_name,
+        "mode": cx["mode"],
+        "control_file": cx["control_name"],
+        "transform": (None if cx["tf"] is None else {
+            "method": cx["tf"]["method"], "n_common": cx["tf"]["n_common"],
+            "redundancy": cx["tf"]["redundancy"],
+        }),
+        "days_without_control": list(cx["days_without_control"]),
         "inputs": [
             {
                 "name": pd.name,
@@ -203,17 +243,28 @@ def manifest_dict(args_argv, run_time, th, pds, observations, points, known_name
     }
 
 
-def build_outputs(observations, points, pds, th, argv, run_time, known_name):
-    """回傳 {檔名: bytes}，全部組好後才寫入。"""
+def build_outputs(observations, points, pds, th, argv, run_time, known_name, cx):
+    """回傳 {檔名: bytes}，全部組好後才寫入。
+
+    cx：作業模式與連測資訊 {mode, control_name, tf, control_days, days_without_control}。
+    """
+    tf = cx["tf"]
+    control_given = cx["control_name"] is not None
+    obs_header = OBS_HEADER + (OBS_CONTROL_HEADER if control_given else [])
+    point_header = POINT_HEADER + (POINT_TRANSFORM_HEADER if tf else [])
     files = {
-        "observations.csv": _csv_bytes(OBS_HEADER, observation_rows(observations)),
-        "points.csv": _csv_bytes(POINT_HEADER, point_rows(points)),
+        "observations.csv": _csv_bytes(obs_header, observation_rows(observations, control_given)),
+        "points.csv": _csv_bytes(point_header, point_rows(points, tf is not None)),
         "remeasure.csv": _csv_bytes(REMEASURE_HEADER, remeasure_rows(points)),
-        "handbook.html": handbook_html(observations, points, pds, th).encode("utf-8"),
+        "handbook.html": handbook_html(observations, points, pds, th, cx["mode"],
+                                       tf).encode("utf-8"),
     }
     if known_name is not None:
         files["known_check.csv"] = _csv_bytes(KNOWN_HEADER, known_rows(points))
-    manifest = manifest_dict(argv, run_time, th, pds, observations, points, known_name)
+    if tf is not None:
+        files["transform.csv"] = _csv_bytes(TRANSFORM_HEADER, transform_rows(tf))
+        files["transform_pairs.csv"] = _csv_bytes(PAIRS_HEADER, pair_rows(tf))
+    manifest = manifest_dict(argv, run_time, th, pds, observations, points, known_name, cx)
     files["manifest.json"] = (
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
     ).encode("utf-8")
@@ -222,12 +273,48 @@ def build_outputs(observations, points, pds, th, argv, run_time, known_name):
 
 def ctl_text(points):
     """CTL：每點一行，點名右靠 8 字元＋空白＋縱坐標＋空白＋橫坐標（0.000），CRLF。"""
-    return "".join(
-        f"{p['id'].rjust(8)} {fmt(p['avg_n'], 3)} {fmt(p['avg_e'], 3)}\r\n" for p in points
-    )
+    lines = []
+    for p in points:
+        n, e, _ = point_coord(p)
+        lines.append(f"{p['id'].rjust(8)} {fmt(n, 3)} {fmt(e, 3)}\r\n")
+    return "".join(lines)
 
 
-def result_dict(observations, points, bases, pds, th, known_given):
+def transform_dict(tf):
+    """轉換結果的正規 JSON 片段（無轉換為 None）。"""
+    if tf is None:
+        return None
+    m = tf["model"]
+    params = {"tN": rnd(m["tN"], 4), "tE": rnd(m["tE"], 4)}
+    if m["method"] == "helmert":
+        params.update({"a": rnd(m["a"], 12), "b": rnd(m["b"], 12),
+                       "scale_ppm": rnd(m["scale_ppm"], 3),
+                       "rotation_sec": rnd(m["rotation_sec"], 3)})
+    elif m["method"] == "affine":
+        params.update({"a1": rnd(m["a1"], 12), "a2": rnd(m["a2"], 12),
+                       "b1": rnd(m["b1"], 12), "b2": rnd(m["b2"], 12)})
+    common = [{
+        "id": c["id"],
+        "n_obs": rnd(c["n_obs"], 3), "e_obs": rnd(c["e_obs"], 3), "h_obs": rnd(c["h_obs"], 3),
+        "n_known": rnd(c["n_known"], 3), "e_known": rnd(c["e_known"], 3),
+        "h_known": rnd(c["h_known"], 3),
+        "n_t": rnd(c["n_t"], 3), "e_t": rnd(c["e_t"], 3), "h_t": rnd(c["h_t"], 3),
+        "vn": rnd(c["vn"], 4), "ve": rnd(c["ve"], 4), "v2d": rnd(c["v2d"], 4),
+        "flags": list(c["flags"]),
+    } for c in tf["common"]]
+    pairs = [{
+        "i": x["i"], "j": x["j"], "az_diff_sec": rnd(x["az_diff_sec"], 2),
+        "d_known": rnd(x["d_known"], 3), "d_t": rnd(x["d_t"], 3),
+        "ratio_den": rnd(x["ratio_den"], 0), "flags": list(x["flags"]),
+    } for x in tf["pairs"]]
+    return {
+        "method": tf["method"], "n_common": tf["n_common"], "redundancy": tf["redundancy"],
+        "params": params, "centroid": {"n": rnd(m["cn"], 3), "e": rnd(m["ce"], 3)},
+        "dh": rnd(tf["dh"], 4), "common": common, "pairs": pairs, "note": tf["note"],
+    }
+
+
+def result_dict(observations, points, bases, pds, th, known_given, cx):
     """判定結果正規 JSON（JS 與 Python 對拍的契約，欄位見 README）。
 
     浮點數先依欄位四捨五入（半數遠離零）。旗標一律用未四捨五入的值判定。
@@ -253,6 +340,8 @@ def result_dict(observations, points, bases, pds, th, known_given):
             "pitch": rnd(o["pitch"], 2), "roll": rnd(o["roll"], 2),
             "tilt_off": rnd(o["tilt_off"], 4),
             "flags": list(o["obs_flags"]), "row_flags": list(o["row_flags"]),
+            "nearest_control": o["nearest_control"],
+            "nearest_control_dist": rnd(o["nearest_control_dist"], 3),
         })
     pts = []
     for p in points:
@@ -263,6 +352,7 @@ def result_dict(observations, points, bases, pds, th, known_given):
             "d2": rnd(p["d2"], 4), "dh": rnd(p["dh"], 4),
             "first_start": p["first_start"], "last_end": p["last_end"],
             "interval_min": rnd(p["interval"], 2), "flags": list(p["flags"]),
+            "n_t": rnd(p["n_t"], 3), "e_t": rnd(p["e_t"], 3), "h_t": rnd(p["h_t"], 3),
         })
     base_list = [{
         "label": b["label"], "base_id": b["base_id"],
@@ -303,4 +393,9 @@ def result_dict(observations, points, bases, pds, th, known_given):
         "neighbors": neighbors,
         "remeasure": remeasure,
         "known_check": known,
+        "mode": cx["mode"],
+        "transform": transform_dict(cx["tf"]),
+        "control_days": [{"date": d["date"], "control_points": list(d["control_points"])}
+                         for d in cx["control_days"]],
+        "days_without_control": list(cx["days_without_control"]),
     }

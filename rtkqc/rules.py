@@ -20,9 +20,21 @@ DEFAULT_THRESHOLDS = {
     "min_interval_min": 0.0,  # 0 = 不檢查
     "known_tol_2d": 0.02,
     "neighbor_max_m": 100.0,  # 相鄰點位檢核：兩兩 2D 距離上限
+    "min_fixed_epochs": 0.0,  # 每筆觀測至少幾筆 FIXED epoch（0 = 不檢查；圖根模式預設 180）
+    "transform_resid_max": 0.098,  # 共同點轉換後坐標分量改正數上限（m）
+    "azimuth_diff_max_sec": 20.0,  # 共同點間方位角較差上限（秒）
+    "distance_ratio_min": 20000.0,  # 共同點間水平距相對較差比值分母下限
 }
 
-FLAG_ORDER = ["X1", "X2", "X3", "X4", "X5", "X6", "F1", "T1", "D1", "K1"]
+# 作業模式覆蓋的預設門檻（--config 仍可再覆蓋）
+MODES = ("survey", "control")
+MODE_DEFAULTS = {
+    "survey": {},
+    "control": {"min_fixed_epochs": 180.0, "min_interval_min": 60.0},
+}
+
+FLAG_ORDER = ["X1", "X2", "X3", "X4", "X5", "X6", "F1", "T1", "E1", "D1", "K1",
+              "C1", "C2", "C3"]
 
 FLAG_DESC = {
     "X1": "兩次觀測採相同主站",
@@ -33,8 +45,12 @@ FLAG_DESC = {
     "X6": "僅有一個觀測值",
     "F1": "有非固定解（Pos_State 非 FIXED）的 epoch",
     "T1": "天線傾斜偏移量達門檻",
+    "E1": "固定解筆數不足",
     "D1": "兩次觀測時間間隔不足",
     "K1": "與已知坐標差距超限",
+    "C1": "共同點轉換後坐標分量改正數超限",
+    "C2": "共同點間方位角較差超限",
+    "C3": "共同點間水平距相對較差超限",
 }
 
 ACTIONS = {
@@ -46,15 +62,22 @@ ACTIONS = {
     "X6": "補測第二次（建議重連 NTRIP）",
     "F1": "等衛星條件改善後重測",
     "T1": "重新整平對中後重測",
+    "E1": "固定解筆數不足，重測並收足筆數",
     "D1": "間隔不足，隔段時間再測",
     "K1": "檢查系統偏移與天線高，重測已知點",
+    "C1": "檢查該加密點觀測與已知坐標，必要時重測",
+    "C2": "檢查相關加密點觀測，必要時重測",
+    "C3": "檢查相關加密點觀測，必要時重測",
 }
 
 EARTH_R = 6378137.0
 
 
-def load_thresholds(path):
+def load_thresholds(path, mode="survey"):
+    if mode not in MODES:
+        raise InputError(f"未知的作業模式：{mode}")
     th = dict(DEFAULT_THRESHOLDS)
+    th.update(MODE_DEFAULTS[mode])
     if path is None:
         return th
     try:
@@ -187,7 +210,9 @@ def obs_flags(o, th):
         flags.append("F1")
     if o["tilt_off"] is not None and o["tilt_off"] >= th["tilt_offset_max"]:
         flags.append("T1")
-    return flags
+    if th["min_fixed_epochs"] > 0 and o["fixed_n"] < th["min_fixed_epochs"]:
+        flags.append("E1")
+    return [f for f in FLAG_ORDER if f in flags]
 
 
 def row_flags(o, th):
@@ -218,8 +243,8 @@ def _mean(vals):
     return total / len(vals)
 
 
-def summarize_point(pid, obs, th, known):
-    """依點號彙整一組觀測，判定點位旗標。known 為 None 或該點的已知坐標 (N, E, H)。"""
+def summarize_point(pid, obs, th):
+    """依點號彙整一組觀測，判定點位旗標（K1、C1～C3 由 apply_known／transform 之後補上）。"""
     obs = sorted(obs, key=lambda o: o["start"])
     n = len(obs)
     pairs = [(a, b) for i, a in enumerate(obs) for b in obs[i + 1:]]
@@ -252,6 +277,8 @@ def summarize_point(pid, obs, th, known):
         flags.append("F1")
     if any("T1" in o["obs_flags"] for o in obs):
         flags.append("T1")
+    if any("E1" in o["obs_flags"] for o in obs):
+        flags.append("E1")
     if (n >= 2 and th["min_interval_min"] > 0 and interval is not None
             and interval < th["min_interval_min"]):
         flags.append("D1")
@@ -259,18 +286,6 @@ def summarize_point(pid, obs, th, known):
     avg_n = _mean([o["n"] for o in obs])
     avg_e = _mean([o["e"] for o in obs])
     avg_h = _mean([o["h"] for o in obs])
-
-    known_row = None
-    if known is not None:
-        kn, ke, kh = known
-        dn = avg_n - kn
-        de = avg_e - ke
-        d2k = dist2d(dn, de)
-        dh_k = None if (avg_h is None or kh is None) else avg_h - kh
-        over = d2k >= th["known_tol_2d"]
-        known_row = {"dn": dn, "de": de, "d2": d2k, "dh": dh_k, "over": over}
-        if over:
-            flags.append("K1")
 
     return {
         "id": pid,
@@ -285,19 +300,49 @@ def summarize_point(pid, obs, th, known):
         "last_end": max(ends_s) if ends_s else "",
         "interval": interval,
         "flags": flags,
-        "known": known_row,
+        "known": None,
+        "n_t": None,
+        "e_t": None,
+        "h_t": None,
     }
 
 
-def build_points(observations, th, known_map):
+def build_points(observations, th):
     groups = {}
     for o in observations:
         groups.setdefault(o["id"], []).append(o)
-    points = []
-    for pid in sorted(groups):
-        kn = known_map.get(pid) if known_map is not None else None
-        points.append(summarize_point(pid, groups[pid], th, kn))
-    return points
+    return [summarize_point(pid, groups[pid], th) for pid in sorted(groups)]
+
+
+def point_coord(p):
+    """點位使用的坐標：有轉換用轉換後 (n_t, e_t, h_t)，否則用平均坐標。"""
+    if p.get("n_t") is not None:
+        return p["n_t"], p["e_t"], p["h_t"]
+    return p["avg_n"], p["avg_e"], p["avg_h"]
+
+
+def sort_flags(flags):
+    return [f for f in FLAG_ORDER if f in flags]
+
+
+def apply_known(points, th, known_map):
+    """與已知點（--known）比對：用點位使用的坐標（有轉換用轉換後），超限加 K1。"""
+    if known_map is None:
+        return
+    for p in points:
+        known = known_map.get(p["id"])
+        if known is None:
+            continue
+        kn, ke, kh = known
+        cn, ce, ch = point_coord(p)
+        dn = cn - kn
+        de = ce - ke
+        d2k = dist2d(dn, de)
+        dh_k = None if (ch is None or kh is None) else ch - kh
+        over = d2k >= th["known_tol_2d"]
+        p["known"] = {"dn": dn, "de": de, "d2": d2k, "dh": dh_k, "over": over}
+        if over:
+            p["flags"] = sort_flags(p["flags"] + ["K1"])
 
 
 def remeasure_rows(points):

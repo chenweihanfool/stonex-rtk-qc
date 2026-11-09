@@ -177,3 +177,79 @@ def frame_scenario(dir_path):
         obs("3", "GDC3", "2026-11-01 08:20:00", "2026-11-01 08:25:00", base="B2"),
     ]
     return make_pd(os.path.join(dir_path, "frame.PD"), observations)
+
+
+# ---- 已知加密點連測／坐標轉換用的合成資料 ----
+# 轉換真值（觀測 → 法定）：平移 (TF_TN, TF_TE)、尺度 +TF_PPM ppm、旋轉 +TF_SEC 秒、高程差 TF_DH。
+TF_TN = -0.26
+TF_TE = 0.40
+TF_PPM = 5.0
+TF_SEC = 2.0
+TF_DH = 0.35
+
+# 法定坐標（相對 BASE_N、BASE_E 的偏移）：前 7 個是加密點（CP00 在重心），後 2 個是一般點
+CTL_LAYOUT = [
+    ("CP00", 0.0, 0.0), ("CP01", 100.0, 0.0), ("CP02", -100.0, 0.0), ("CP03", 0.0, 120.0),
+    ("CP04", 0.0, -120.0), ("CP05", 80.0, 90.0), ("CP06", -80.0, -90.0),
+    ("P01", 30.0, 40.0), ("P02", -60.0, 70.0),
+]
+N_CONTROL = 7
+
+
+def tf_params():
+    import math
+    k = 1.0 + TF_PPM * 1e-6
+    th = TF_SEC / 3600.0 * math.pi / 180.0
+    return k * math.cos(th), k * math.sin(th)
+
+
+def tf_forward(n, e):
+    """真值轉換：觀測 → 法定（以 BASE_N、BASE_E 為參考點）。"""
+    a, b = tf_params()
+    dn, de = n - BASE_N, e - BASE_E
+    return BASE_N + a * dn - b * de + TF_TN, BASE_E + b * dn + a * de + TF_TE
+
+
+def tf_inverse(n, e):
+    """由法定坐標反推觀測坐標。"""
+    a, b = tf_params()
+    dn, de = n - BASE_N - TF_TN, e - BASE_E - TF_TE
+    det = a * a + b * b
+    return BASE_N + (a * dn + b * de) / det, BASE_E + (-b * dn + a * de) / det
+
+
+def control_scenario(dir_path, outlier=0.0, extra_day=False, fixed_epochs=3):
+    """一個 .PD（9 個點各一筆觀測，觀測坐標＝法定真值反推）。
+
+    回傳 {"pd": 路徑, "control": {點號: (N, E, H)}（7 個加密點的法定成果）,
+          "truth": {點號: (N, E, H)}（所有點的法定真值）}。
+    outlier：CP00 的成果表 N 比真值多 outlier（模擬加密點成果或觀測有誤）。
+    extra_day：多一筆隔天（11-02）只觀測一般點的觀測，用來測每日連測檢查。
+    """
+    os.makedirs(dir_path, exist_ok=True)
+    observations, control, truth = [], {}, {}
+    for i, (pid, dn, de) in enumerate(CTL_LAYOUT):
+        ln, le, lh = BASE_N + dn, BASE_E + de, 50.0 + 0.1 * i
+        on, oe = tf_inverse(ln, le)
+        start = f"2026-11-01 08:{i:02d}:00"
+        observations.append(obs(pid, "X", start, f"2026-11-01 08:{i:02d}:30", h=lh - TF_DH,
+                                north=on, east=oe, pos_states=["FIXED"] * fixed_epochs))
+        truth[pid] = (ln, le, lh)
+        if i < N_CONTROL:
+            control[pid] = (ln + (outlier if pid == "CP00" else 0.0), le, lh)
+    if extra_day:
+        on, oe = tf_inverse(BASE_N + 30.0, BASE_E + 40.0)
+        observations.append(obs("P01", "X", "2026-11-02 09:00:00", "2026-11-02 09:00:30",
+                                h=50.0 + 0.7 - TF_DH, north=on, east=oe,
+                                pos_states=["FIXED"] * fixed_epochs))
+    pd = make_pd(os.path.join(dir_path, "control.PD"), observations)
+    return {"pd": pd, "control": control, "truth": truth}
+
+
+def write_control_csv(path, control, header=True):
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        if header:
+            f.write("點號,N,E,H\n")
+        for pid, (n, e, h) in control.items():
+            f.write(f"{pid},{n:.6f},{e:.6f},{'' if h is None else format(h, '.6f')}\n")
+    return path
