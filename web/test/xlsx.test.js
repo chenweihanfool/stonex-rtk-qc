@@ -120,7 +120,7 @@ test('觀測資料彙整表：標題、說明列、第 6 列表頭與資料列',
   const z = readZip(bytes);
   const s3 = sheetXml(z, 3);
   assert.equal(cellText(s3, 'A1'), 'RTK圖根測量觀測資料彙整表');
-  assert.equal(cellText(s3, 'A2'), '來源：day1.PD、day2.PD　產製：2026-11-09 12:00　rtkqc 0.2.0');
+  assert.equal(cellText(s3, 'A2'), '來源：day1.PD、day2.PD　產製：2026-11-09 12:00　rtkqc 0.3.0');
   assert.equal(cellText(s3, 'A4'), '備註欄說明');
   assert.equal(cellText(s3, 'C4'), 'X1：表兩次觀測採相同主站。');
   assert.equal(cellText(s3, 'E4'), 'X2:表固定解平面誤差未小於2cm。');
