@@ -24,8 +24,10 @@ def build_parser():
     p.add_argument("--out", required=True, help="輸出資料夾（不存在會建立）")
     p.add_argument("--known", help="已知點 CSV（點號,N,E[,H]）")
     p.add_argument("--mode", choices=MODES, default="survey",
-                   help="作業模式：survey（現況／界址，預設）或 control（圖根：每測回至少 180 筆固定解、"
-                        "兩測回間隔 60 分鐘以上）")
+                   help="作業模式：survey（現況／界址，預設，不檢查固定解筆數；研究建議界址點 10 筆，"
+                        "可於門檻設定）、traverse（圖根：每測回至少 60 筆固定解，依內政部全星系 e-GNSS "
+                        "界址測量作業探討之建議值，請向主管機關確認）、control（控制點：每測回至少 180 "
+                        "筆固定解，依國土測繪中心 e-GNSS 控制測量作業手冊）")
     p.add_argument("--control", help="已知加密點成果表 CSV（點號,N,E[,H]）；觀測點號相同者為共同點")
     p.add_argument("--transform", choices=METHODS, default="auto",
                    help="坐標轉換方法（需 --control）：auto（0 點不轉換、1 點平移、≥2 點 4 參數，預設）、"

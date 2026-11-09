@@ -198,7 +198,9 @@ const FLAG_ORDER = ['X1', 'X2', 'X3', 'X4', 'X5', 'X6', 'F1', 'T1', 'E1', 'D1', 
 const METHOD_LABEL = {
   shift: '坐標分量平移', helmert: '4 參數平面轉換', affine: '6 參數平面轉換', none: '不轉換',
 };
-const MODE_LABEL = { survey: '現況／界址（survey）', control: '圖根（control）' };
+const MODE_LABEL = {
+  survey: '現況／界址（survey）', traverse: '圖根（traverse）', control: '控制點（control）',
+};
 const N4 = (v) => ({ v, s: ST.N4 });
 const N2 = (v) => ({ v, s: ST.N2 });
 

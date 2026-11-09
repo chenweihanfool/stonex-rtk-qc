@@ -22,7 +22,7 @@ var TH_FIELDS = [
   ['min_interval_min', '兩次觀測最短間隔（分，0＝不檢查）'],
   ['known_tol_2d', '與已知點較差上限（m）'],
   ['neighbor_max_m', '相鄰點位距離上限（m）'],
-  ['min_fixed_epochs', '每筆觀測最少固定解筆數（0＝不檢查；圖根模式預設 180）'],
+  ['min_fixed_epochs', '每筆觀測最少固定解筆數（0＝不檢查；控制點模式預設 180、圖根 60）'],
   ['transform_resid_max', '共同點轉換後坐標分量改正數上限（m）'],
   ['azimuth_diff_max_sec', '共同點間方位角較差上限（秒）'],
   ['distance_ratio_min', '共同點間水平距相對較差比值分母下限'],

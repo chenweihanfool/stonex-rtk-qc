@@ -18,19 +18,25 @@ const DEFAULT_THRESHOLDS = {
   min_interval_min: 0.0, // 0 = 不檢查
   known_tol_2d: 0.02,
   neighbor_max_m: 100.0,
-  min_fixed_epochs: 0.0, // 每筆觀測至少幾筆 FIXED epoch（0 = 不檢查；圖根模式預設 180）
+  min_fixed_epochs: 0.0, // 每筆觀測至少幾筆 FIXED epoch（0 = 不檢查；依作業模式預設）
   transform_resid_max: 0.098, // 共同點轉換後坐標分量改正數上限（m）
   azimuth_diff_max_sec: 20.0, // 共同點間方位角較差上限（秒）
   distance_ratio_min: 20000.0, // 共同點間水平距相對較差比值分母下限
 };
 
 // 作業模式覆蓋的預設門檻（--config／UI 設定仍可再覆蓋）
-const MODES = ['survey', 'control'];
+// 來源：control＝國土測繪中心 e-GNSS 控制測量作業手冊（每測回至少 180 筆固定解，兩測回間隔無限制）；
+// traverse＝內政部全星系 e-GNSS 界址測量作業探討之建議值 60 筆；survey 不檢查（研究建議界址點 10 筆）。
+// 所有模式的 min_interval_min 預設都是 0。
+const MODES = ['survey', 'traverse', 'control'];
 const MODE_DEFAULTS = {
   survey: {},
-  control: { min_fixed_epochs: 180.0, min_interval_min: 60.0 },
+  traverse: { min_fixed_epochs: 60.0 },
+  control: { min_fixed_epochs: 180.0 },
 };
-const MODE_LABEL = { survey: '現況／界址（survey）', control: '圖根（control）' };
+const MODE_LABEL = {
+  survey: '現況／界址（survey）', traverse: '圖根（traverse）', control: '控制點（control）',
+};
 
 const FLAG_ORDER = ['X1', 'X2', 'X3', 'X4', 'X5', 'X6', 'F1', 'T1', 'E1', 'D1', 'K1', 'C1', 'C2', 'C3'];
 
@@ -981,7 +987,7 @@ function buildResult(observations, points, bases, pds, th, cx) {
 
 /**
  * 分析一組已讀入的 .PD。
- * opts: { pds, thresholds, known (Map|null), knownName, mode ('survey'|'control'),
+ * opts: { pds, thresholds, known (Map|null), knownName, mode ('survey'|'traverse'|'control'),
  *        control (Map|null)、controlName、transform ('auto'|'shift'|'helmert'|'affine'|'none') }
  * 回傳 { th, pds(去重後), warnings, observations, points, bases, result, knownName, mode, tf,
  *        controlName, controlDays, daysWithoutControl }

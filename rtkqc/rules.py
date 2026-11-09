@@ -20,17 +20,24 @@ DEFAULT_THRESHOLDS = {
     "min_interval_min": 0.0,  # 0 = 不檢查
     "known_tol_2d": 0.02,
     "neighbor_max_m": 100.0,  # 相鄰點位檢核：兩兩 2D 距離上限
-    "min_fixed_epochs": 0.0,  # 每筆觀測至少幾筆 FIXED epoch（0 = 不檢查；圖根模式預設 180）
+    "min_fixed_epochs": 0.0,  # 每筆觀測至少幾筆 FIXED epoch（0 = 不檢查；依作業模式預設）
     "transform_resid_max": 0.098,  # 共同點轉換後坐標分量改正數上限（m）
     "azimuth_diff_max_sec": 20.0,  # 共同點間方位角較差上限（秒）
     "distance_ratio_min": 20000.0,  # 共同點間水平距相對較差比值分母下限
 }
 
 # 作業模式覆蓋的預設門檻（--config 仍可再覆蓋）
-MODES = ("survey", "control")
+# 來源：
+#   control  ：國土測繪中心「採用電子化全球衛星即時動態定位系統辦理控制測量作業手冊」——
+#              每測回至少 180 筆固定解；兩測回間隔無限制（須重新開機並改變儀器高度）。
+#   traverse ：內政部「採用全星系 e-GNSS 辦理界址測量作業之探討」建議值 60 筆（請向主管機關確認）。
+#   survey   ：不檢查固定解筆數（上述研究建議界址點 10 筆，可於門檻設定）。
+# 所有模式的 min_interval_min 預設都是 0（不檢查）。
+MODES = ("survey", "traverse", "control")
 MODE_DEFAULTS = {
     "survey": {},
-    "control": {"min_fixed_epochs": 180.0, "min_interval_min": 60.0},
+    "traverse": {"min_fixed_epochs": 60.0},
+    "control": {"min_fixed_epochs": 180.0},
 }
 
 FLAG_ORDER = ["X1", "X2", "X3", "X4", "X5", "X6", "F1", "T1", "E1", "D1", "K1",

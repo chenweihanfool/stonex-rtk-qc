@@ -13,7 +13,8 @@ from .rules import (ACTIONS, FLAG_DESC, FLAG_ORDER, find_neighbors, fmt, pair_2d
                     point_coord, remeasure_rows, rnd)
 from .transform import METHOD_LABEL
 
-MODE_LABEL = {"survey": "現況／界址（survey）", "control": "圖根（control）"}
+MODE_LABEL = {"survey": "現況／界址（survey）", "traverse": "圖根（traverse）",
+              "control": "控制點（control）"}
 
 OBS_HEADER = [
     "來源檔名", "點號", "NAME", "CODE", "N", "E", "H", "開始時間", "結束時間",

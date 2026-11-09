@@ -1,7 +1,7 @@
 # 版本歷程
 
 ## 0.3.0 - 2026-11-09
-- 新增作業模式 `--mode {survey,control}`：survey（現況／界址，預設，行為同 0.2.0）；control（圖根）預設每筆觀測至少 180 筆固定解、兩測回間隔 60 分鐘以上。新增旗標 E1（固定解筆數不足，門檻 `min_fixed_epochs`）。
+- 新增作業模式 `--mode {survey,traverse,control}`：survey（現況／界址，預設，行為同 0.2.0，不檢查固定解筆數）；traverse（圖根）每測回至少 60 筆固定解（內政部全星系 e-GNSS 界址測量作業探討之建議值，請向主管機關確認）；control（控制點）每測回至少 180 筆固定解（國土測繪中心 e-GNSS 控制測量作業手冊）。所有模式的兩測回時間間隔預設都不檢查（手冊規定間隔無限制）。新增旗標 E1（固定解筆數不足，門檻 `min_fixed_epochs`）。
 - 新增已知加密點連測：`--control` 匯入加密點成果表，觀測點號相同者為共同點；`--transform {auto,shift,helmert,affine,none}` 求 e-GNSS 到法定坐標的轉換（1 點平移、2 點以上 4 參數、affine 6 參數需 3 點以上），輸出共同點殘差、尺度 ppm、旋轉秒、多餘觀測數。
 - 新增轉換檢核旗標 C1（共同點分量改正數 ≥ 9.8 cm）、C2（點間方位角較差 ≥ 20 秒）、C3（點間水平距相對較差 ≥ 1/20000），依據國土測繪中心 VBS-RTK 辦理加密控制及圖根測量作業手冊。
 - 有轉換時，CTL、點位坐標平均值表與已知點檢核（K1）一律使用轉換後的法定坐標；新增 transform.csv、transform_pairs.csv；observations.csv 加最近已知加密點與距離；points.csv 加轉換後 N、E、H。
