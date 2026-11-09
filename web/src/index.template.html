@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; connect-src https://chenweihanfool.github.io; base-uri 'none'; form-action 'none'">
+<title>rtkqc RTK 觀測品管</title>
+<style>
+{{CSS}}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <h1>rtkqc <span id="ver" class="ver"></span></h1>
+    <span class="sub">Stonex RTK 觀測品管（VBS-RTK）</span>
+  </div>
+  <div class="top-actions no-print">
+    <button type="button" id="btn-changelog" class="ghost">版本歷程</button>
+  </div>
+</header>
+
+<div id="update-bar" class="update no-print" role="status" hidden></div>
+
+<main>
+  <p class="privacy">資料只在本機瀏覽器處理，不會上傳；.PD 檔只在記憶體中讀取，不寫回、不傳送。離線也能使用。</p>
+
+  <section class="card no-print" id="inputs">
+    <div id="drop" class="drop" tabindex="0">
+      <strong>把 Stonex 的 .PD 檔拖到這裡</strong>
+      <span>或</span>
+      <label class="btn">選擇檔案
+        <input type="file" id="pd-input" multiple accept=".PD,.pd" hidden>
+      </label>
+      <span class="hint">可一次放多個檔（同一點分在多天也會自動合併）</span>
+    </div>
+    <ul id="file-list" class="file-list"></ul>
+
+    <div class="opts">
+      <label class="field">已知點 CSV（選填：點號,N,E[,H]）
+        <input type="file" id="known-input" accept=".csv,.txt">
+      </label>
+      <span id="known-name" class="hint"></span>
+      <label class="field">點號來源
+        <select id="id-from">
+          <option value="auto">auto（依 NAME／CODE 自動判斷）</option>
+          <option value="name">name（用 NAME）</option>
+          <option value="code">code（用 CODE）</option>
+        </select>
+      </label>
+    </div>
+
+    <details class="settings" id="settings">
+      <summary>門檻設定</summary>
+      <div id="th-grid" class="th-grid"></div>
+      <button type="button" id="th-reset" class="ghost">還原預設值</button>
+    </details>
+  </section>
+
+  <section id="messages" class="messages" aria-live="polite"></section>
+
+  <section id="results" hidden>
+    <h2>摘要</h2>
+    <div id="summary" class="summary"></div>
+
+    <h2>點位</h2>
+    <div class="table-wrap"><table id="points-table" class="tbl"></table></div>
+
+    <h2>隔天重測清單 <button type="button" id="btn-print" class="ghost no-print">列印</button></h2>
+    <div class="table-wrap"><table id="remeasure-table" class="tbl"></table></div>
+
+    <div class="no-print">
+      <h2>下載</h2>
+      <div id="downloads" class="downloads"></div>
+      <p class="hint">彙整檔 .xlsx 格式比照 113 年「RTK 圖根測量觀測彙整檔（標準版）」；相鄰點位檢核表的「直接量測距離」留空，外業量測後填入即自動計算。</p>
+    </div>
+  </section>
+</main>
+
+<footer class="foot no-print">
+  <span>rtkqc <span id="ver2"></span>　單檔離線版　資料不外傳</span>
+</footer>
+
+<dialog id="changelog-dialog">
+  <div class="dlg-head">
+    <h2>版本歷程</h2>
+    <button type="button" id="changelog-close" class="ghost">關閉</button>
+  </div>
+  <div id="changelog-body" class="changelog"></div>
+</dialog>
+
+<script id="rtkqc-wasm" type="text/plain">{{WASM_B64}}</script>
+<script>var RTKQC_CHANGELOG = {{CHANGELOG_JSON}};</script>
+<script>
+{{SQLJS}}
+</script>
+<script>
+{{CORE}}
+</script>
+<script>
+{{XLSX}}
+</script>
+<script>
+{{APP}}
+</script>
+</body>
+</html>

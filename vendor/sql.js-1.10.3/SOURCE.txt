@@ -1,0 +1,4 @@
+來源：npm 套件 sql.js@1.10.3（npm pack），MIT 授權（見 LICENSE）
+tarball integrity: sha512-H46aWtQkdyjZwFQgraUruy5h/DyJBbAK3EA/WEMqiqF6PGPfKBSKBj/er3dVyYqVIoYfRf5TFM/loEjtQIrqJg==
+sha256 sql-wasm.js   558a72c3ab3415d0e6d243cfd23f9d61543600d59054b4b7b8da3cd65f6b9fd4
+sha256 sql-wasm.wasm d7e61b828523001f26ce0b3f88dabcf6c12e5e6edf80eb4f08b26ac7b946ff88

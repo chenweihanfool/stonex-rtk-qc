@@ -4,9 +4,11 @@ import csv
 import json
 import math
 from datetime import datetime
+from decimal import ROUND_HALF_UP, Context, Decimal
 from pathlib import Path
 
 from .pdreader import InputError
+from .tm2 import lonlat_to_tm2
 
 DEFAULT_THRESHOLDS = {
     "same_base_tol_m": 0.01,
@@ -17,6 +19,7 @@ DEFAULT_THRESHOLDS = {
     "tilt_offset_max": 0.01,
     "min_interval_min": 0.0,  # 0 = 不檢查
     "known_tol_2d": 0.02,
+    "neighbor_max_m": 100.0,  # 相鄰點位檢核：兩兩 2D 距離上限
 }
 
 FLAG_ORDER = ["X1", "X2", "X3", "X4", "X5", "X6", "F1", "T1", "D1", "K1"]
@@ -112,8 +115,30 @@ def load_known(path):
     return known
 
 
+_DEC_CTX = Context(prec=60)
+
+
+def round_half_up(v, nd):
+    """四捨五入到 nd 位（半數遠離零）。先取 15 位有效數字消除二進位浮點誤差，JS 端同規則。
+
+    回傳 Decimal（None 則回傳 None）；負零一律轉成 0。
+    """
+    if v is None:
+        return None
+    d = Decimal(format(float(v), ".15g"))
+    q = d.quantize(Decimal(1).scaleb(-nd), rounding=ROUND_HALF_UP, context=_DEC_CTX)
+    return abs(q) if q.is_zero() else q
+
+
+def rnd(v, nd):
+    """round_half_up 後轉 float（供 JSON 使用）。"""
+    q = round_half_up(v, nd)
+    return None if q is None else float(q)
+
+
 def fmt(v, nd):
-    return "" if v is None else f"{v:.{nd}f}"
+    q = round_half_up(v, nd)
+    return "" if q is None else format(q, "f")
 
 
 def plane_dist(lat1, lon1, lat2, lon2):
@@ -121,7 +146,7 @@ def plane_dist(lat1, lon1, lat2, lon2):
     lat0 = math.radians((lat1 + lat2) / 2)
     dy = math.radians(lat2 - lat1) * EARTH_R
     dx = math.radians(lon2 - lon1) * EARTH_R * math.cos(lat0)
-    return math.hypot(dx, dy)
+    return math.sqrt(dx * dx + dy * dy)
 
 
 def same_base(a, b, th):
@@ -133,8 +158,13 @@ def same_base(a, b, th):
     return d < th["same_base_tol_m"]
 
 
+def dist2d(dn, de):
+    # 不用 math.hypot：sqrt 為 IEEE 正確捨入，JS 端結果逐位相同
+    return math.sqrt(dn * dn + de * de)
+
+
 def pair_2d(a, b):
-    return math.hypot(a["n"] - b["n"], a["e"] - b["e"])
+    return dist2d(a["n"] - b["n"], a["e"] - b["e"])
 
 
 def pair_dh(a, b):
@@ -160,6 +190,19 @@ def obs_flags(o, th):
     return flags
 
 
+def row_flags(o, th):
+    """每筆觀測自己的旗標（X2、X3、X4、F1、T1），依 FLAG_ORDER 排序。obs_flags 需已算好。"""
+    flags = []
+    if o["hrms"] is not None and o["hrms"] >= th["hrms_max"]:
+        flags.append("X2")
+    if o["vrms"] is not None and o["vrms"] >= th["vrms_max"]:
+        flags.append("X3")
+    if o["pdop"] is not None and o["pdop"] >= th["pdop_max"]:
+        flags.append("X4")
+    flags.extend(f for f in o["obs_flags"])
+    return [f for f in FLAG_ORDER if f in flags]
+
+
 def _maxnone(vals):
     vals = [v for v in vals if v is not None]
     return max(vals) if vals else None
@@ -167,7 +210,12 @@ def _maxnone(vals):
 
 def _mean(vals):
     vals = [v for v in vals if v is not None]
-    return sum(vals) / len(vals) if vals else None
+    if not vals:
+        return None
+    total = 0.0  # 逐項相加（不用 sum()，Python 3.12 起 sum 會做補償加總，與 JS 不同）
+    for v in vals:
+        total += v
+    return total / len(vals)
 
 
 def summarize_point(pid, obs, th, known):
@@ -217,7 +265,7 @@ def summarize_point(pid, obs, th, known):
         kn, ke, kh = known
         dn = avg_n - kn
         de = avg_e - ke
-        d2k = math.hypot(dn, de)
+        d2k = dist2d(dn, de)
         dh_k = None if (avg_h is None or kh is None) else avg_h - kh
         over = d2k >= th["known_tol_2d"]
         known_row = {"dn": dn, "de": de, "d2": d2k, "dh": dh_k, "over": over}
@@ -264,3 +312,84 @@ def remeasure_rows(points):
         rows.append([p["id"], ";".join(p["flags"]), "；".join(actions),
                      fmt(p["avg_n"], 3), fmt(p["avg_e"], 3)])
     return rows
+
+
+def assign_bases(observations, th):
+    """把每筆觀測歸到主站，替每筆加上 base_label，回傳主站清單。
+
+    主站＝Base_ID 相同且基站位置差 < same_base_tol_m。主站點名＝Base_ID，
+    同 ID 不同位置依出現順序（開始時間，同時間依輸入順序）加 (2)、(3)…。
+    """
+    bases = []
+    for o in sorted(observations, key=lambda x: x["start"]):  # 穩定排序
+        found = None
+        for b in bases:
+            if b["base_id"] != o["base_id"]:
+                continue
+            if b["lat"] is None and o["base_lat"] is None and b["lon"] is None                     and o["base_lon"] is None:
+                found = b
+                break
+            if None in (b["lat"], b["lon"], o["base_lat"], o["base_lon"]):
+                continue
+            if plane_dist(b["lat"], b["lon"], o["base_lat"], o["base_lon"])                     < th["same_base_tol_m"]:
+                found = b
+                break
+        if found is None:
+            same_id = sum(1 for b in bases if b["base_id"] == o["base_id"])
+            label = o["base_id"] or ""
+            if same_id:
+                label = f"{label}({same_id + 1})"
+            n = e = None
+            if o["base_lat"] is not None and o["base_lon"] is not None:
+                n, e = lonlat_to_tm2(o["base_lat"], o["base_lon"])
+            found = {"label": label, "base_id": o["base_id"], "lat": o["base_lat"],
+                     "lon": o["base_lon"], "alt": o.get("base_alt"), "n": n, "e": e,
+                     "h": o.get("base_alt"), "grid_shift_n": None, "grid_shift_e": None,
+                     "undulation": None, "grid_corrected": False, "count": 0}
+            bases.append(found)
+        found["count"] += 1
+        o["base_label"] = found["label"]
+    correct_bases(observations, bases)
+    return bases
+
+
+def correct_bases(observations, bases):
+    """用同主站觀測點的控制器網格坐標修正主站坐標的框架差。
+
+    .PD 的經緯度是網路 RTCM 轉換前的框架，North/East/Height 是轉換後的 TWD97 網格。
+    shift = 平均(控制器 N/E − TM2(觀測點經緯度))；undulation = 平均(Altitude − Height)。
+    主站網格坐標 = TM2(基站經緯度) + shift；h = Base_Altitude − undulation。
+    缺欄位或沒有觀測時保留未修正值，grid_corrected = False。
+    """
+    for b in bases:
+        dn, de, du = [], [], []
+        for o in observations:
+            if o["base_label"] != b["label"]:
+                continue
+            if o.get("lat") is not None and o.get("lon") is not None:
+                tn, te = lonlat_to_tm2(o["lat"], o["lon"])
+                dn.append(o["n"] - tn)
+                de.append(o["e"] - te)
+            if o.get("alt") is not None and o["h"] is not None:
+                du.append(o["alt"] - o["h"])
+        if not dn or b["n"] is None:
+            continue
+        b["grid_shift_n"] = _mean(dn)
+        b["grid_shift_e"] = _mean(de)
+        b["n"] += b["grid_shift_n"]
+        b["e"] += b["grid_shift_e"]
+        b["grid_corrected"] = True
+        if du and b["alt"] is not None:
+            b["undulation"] = _mean(du)
+            b["h"] = b["alt"] - b["undulation"]
+
+
+def find_neighbors(points, th):
+    """點位平均坐標兩兩 2D 距離 <= neighbor_max_m 的點對（依點位排序，i<j）。"""
+    out = []
+    for i, a in enumerate(points):
+        for b in points[i + 1:]:
+            d = dist2d(a["avg_n"] - b["avg_n"], a["avg_e"] - b["avg_e"])
+            if d <= th["neighbor_max_m"]:
+                out.append({"id": a["id"], "other": b["id"], "dist": d})
+    return out

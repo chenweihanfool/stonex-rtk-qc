@@ -9,7 +9,8 @@ import io
 import json
 
 from . import __version__
-from .rules import FLAG_DESC, FLAG_ORDER, fmt, pair_2d, remeasure_rows
+from .rules import (ACTIONS, FLAG_DESC, FLAG_ORDER, find_neighbors, fmt, pair_2d,
+                    remeasure_rows, rnd)
 
 OBS_HEADER = [
     "來源檔名", "點號", "NAME", "CODE", "N", "E", "H", "開始時間", "結束時間",
@@ -217,3 +218,89 @@ def build_outputs(observations, points, pds, th, argv, run_time, known_name):
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
     ).encode("utf-8")
     return files
+
+
+def ctl_text(points):
+    """CTL：每點一行，點名右靠 8 字元＋空白＋縱坐標＋空白＋橫坐標（0.000），CRLF。"""
+    return "".join(
+        f"{p['id'].rjust(8)} {fmt(p['avg_n'], 3)} {fmt(p['avg_e'], 3)}\r\n" for p in points
+    )
+
+
+def result_dict(observations, points, bases, pds, th, known_given):
+    """判定結果正規 JSON（JS 與 Python 對拍的契約，欄位見 README）。
+
+    浮點數先依欄位四捨五入（半數遠離零）。旗標一律用未四捨五入的值判定。
+    """
+    obs = []
+    for o in observations:
+        obs.append({
+            "source": o["source"], "id": o["id"], "name": o["name"], "code": o["code"],
+            "n": rnd(o["n"], 3), "e": rnd(o["e"], 3), "h": rnd(o["h"], 3),
+            "start": o["start"], "end": o["end"],
+            "epoch_n": o["epoch_n"], "fixed_n": o["fixed_n"],
+            "hrms": rnd(o["hrms"], 4), "vrms": rnd(o["vrms"], 4),
+            "pdop": rnd(o["pdop"], 4), "sat": o["sat"],
+            "ep_hrms_max": rnd(o["ep_hrms_max"], 4),
+            "ep_vrms_max": rnd(o["ep_vrms_max"], 4),
+            "ep_pdop_max": rnd(o["ep_pdop_max"], 4),
+            "ep_sat_min": o["ep_sat_min"],
+            "ep_delay_max": rnd(o["ep_delay_max"], 4),
+            "base_id": o["base_id"], "base_label": o["base_label"],
+            "base_lat": rnd(o["base_lat"], 8), "base_lon": rnd(o["base_lon"], 8),
+            "base_alt": rnd(o["base_alt"], 3),
+            "dist_base": rnd(o["dist_base"], 3), "ant_h": rnd(o["ant_h"], 3),
+            "pitch": rnd(o["pitch"], 2), "roll": rnd(o["roll"], 2),
+            "tilt_off": rnd(o["tilt_off"], 4),
+            "flags": list(o["obs_flags"]), "row_flags": list(o["row_flags"]),
+        })
+    pts = []
+    for p in points:
+        pts.append({
+            "id": p["id"], "count": p["n"],
+            "avg_n": rnd(p["avg_n"], 3), "avg_e": rnd(p["avg_e"], 3),
+            "avg_h": rnd(p["avg_h"], 3),
+            "d2": rnd(p["d2"], 4), "dh": rnd(p["dh"], 4),
+            "first_start": p["first_start"], "last_end": p["last_end"],
+            "interval_min": rnd(p["interval"], 2), "flags": list(p["flags"]),
+        })
+    base_list = [{
+        "label": b["label"], "base_id": b["base_id"],
+        "lat": rnd(b["lat"], 8), "lon": rnd(b["lon"], 8), "alt": rnd(b["alt"], 3),
+        "n": rnd(b["n"], 3), "e": rnd(b["e"], 3), "h": rnd(b["h"], 3),
+        "grid_shift_n": rnd(b["grid_shift_n"], 4), "grid_shift_e": rnd(b["grid_shift_e"], 4),
+        "undulation": rnd(b["undulation"], 3), "grid_corrected": bool(b["grid_corrected"]),
+        "count": b["count"],
+    } for b in bases]
+    neighbors = [{"id": x["id"], "other": x["other"], "dist": rnd(x["dist"], 3)}
+                 for x in find_neighbors(points, th)]
+    remeasure = []
+    for p in points:
+        if not p["flags"]:
+            continue
+        actions = []
+        for f in FLAG_ORDER:
+            if f in p["flags"] and ACTIONS[f] not in actions:
+                actions.append(ACTIONS[f])
+        remeasure.append({"id": p["id"], "flags": list(p["flags"]), "actions": actions,
+                          "avg_n": rnd(p["avg_n"], 3), "avg_e": rnd(p["avg_e"], 3)})
+    known = []
+    for p in points:
+        k = p["known"]
+        if k is None:
+            continue
+        known.append({"id": p["id"], "dn": rnd(k["dn"], 4), "de": rnd(k["de"], 4),
+                      "d2": rnd(k["d2"], 4), "dh": rnd(k["dh"], 4), "over": bool(k["over"])})
+    return {
+        "version": __version__,
+        "thresholds": dict(th),
+        "inputs": [{"name": pd.name, "sha256": pd.sha256,
+                    "observations": sum(1 for o in observations if o["source"] == pd.name)}
+                   for pd in pds],
+        "observations": obs,
+        "points": pts,
+        "bases": base_list,
+        "neighbors": neighbors,
+        "remeasure": remeasure,
+        "known_check": known,
+    }
