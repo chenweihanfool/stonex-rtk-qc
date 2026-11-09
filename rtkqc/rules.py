@@ -344,11 +344,44 @@ def assign_bases(observations, th):
                 n, e = lonlat_to_tm2(o["base_lat"], o["base_lon"])
             found = {"label": label, "base_id": o["base_id"], "lat": o["base_lat"],
                      "lon": o["base_lon"], "alt": o.get("base_alt"), "n": n, "e": e,
-                     "count": 0}
+                     "h": o.get("base_alt"), "grid_shift_n": None, "grid_shift_e": None,
+                     "undulation": None, "grid_corrected": False, "count": 0}
             bases.append(found)
         found["count"] += 1
         o["base_label"] = found["label"]
+    correct_bases(observations, bases)
     return bases
+
+
+def correct_bases(observations, bases):
+    """用同主站觀測點的控制器網格坐標修正主站坐標的框架差。
+
+    .PD 的經緯度是網路 RTCM 轉換前的框架，North/East/Height 是轉換後的 TWD97 網格。
+    shift = 平均(控制器 N/E − TM2(觀測點經緯度))；undulation = 平均(Altitude − Height)。
+    主站網格坐標 = TM2(基站經緯度) + shift；h = Base_Altitude − undulation。
+    缺欄位或沒有觀測時保留未修正值，grid_corrected = False。
+    """
+    for b in bases:
+        dn, de, du = [], [], []
+        for o in observations:
+            if o["base_label"] != b["label"]:
+                continue
+            if o.get("lat") is not None and o.get("lon") is not None:
+                tn, te = lonlat_to_tm2(o["lat"], o["lon"])
+                dn.append(o["n"] - tn)
+                de.append(o["e"] - te)
+            if o.get("alt") is not None and o["h"] is not None:
+                du.append(o["alt"] - o["h"])
+        if not dn or b["n"] is None:
+            continue
+        b["grid_shift_n"] = _mean(dn)
+        b["grid_shift_e"] = _mean(de)
+        b["n"] += b["grid_shift_n"]
+        b["e"] += b["grid_shift_e"]
+        b["grid_corrected"] = True
+        if du and b["alt"] is not None:
+            b["undulation"] = _mean(du)
+            b["h"] = b["alt"] - b["undulation"]
 
 
 def find_neighbors(points, th):

@@ -218,3 +218,24 @@ test('sortedAntennas 去重並排序', () => {
   const pds = [{ antennas: [['B2', 'S900A'], ['A1', 'S900A']] }, { antennas: [['A1', 'S900A']] }];
   assert.deepEqual(RTKQC.sortedAntennas(pds), [['A1', 'S900A'], ['B2', 'S900A']]);
 });
+
+test('主站框架差修正：JSON 與 Python 相同，且等於真值', async () => {
+  const d = path.join(tmp, 'frame');
+  fs.mkdirSync(d);
+  const r = H.py(['-c',
+    "import sys; sys.path.insert(0, 'tests'); import make_fixture as mf; mf.frame_scenario(sys.argv[1])", d]);
+  assert.equal(r.status, 0, r.stderr);
+  const pdPath = path.join(d, 'frame.PD');
+  const p = H.runPython([pdPath], path.join(d, 'out'));
+  const pds = await H.readAll([pdPath]);
+  const an = RTKQC.analyze({ pds });
+  assert.deepStrictEqual(an.result, p.json);
+  const [b1, b2] = an.result.bases;
+  const [tn, te] = RTKQC.lonlatToTm2(10.0, 100.0);
+  assert.equal(b1.grid_corrected, true);
+  assert.ok(Math.abs(b1.n - (tn - 0.26)) < 0.001);
+  assert.ok(Math.abs(b1.e - (te + 0.40)) < 0.001);
+  assert.ok(Math.abs(b1.h - 14.5) < 0.001);
+  assert.equal(b2.grid_corrected, false);
+  assert.equal(b2.grid_shift_n, null);
+});

@@ -196,6 +196,15 @@ const N3 = (v) => ({ v, s: ST.N3 });
 const POINT_LEVEL_FLAGS = ['X1', 'X5', 'X6', 'D1', 'K1'];
 const FLAG_ORDER = ['X1', 'X2', 'X3', 'X4', 'X5', 'X6', 'F1', 'T1', 'D1', 'K1'];
 
+function baseNote(bases) {
+  const ok = bases.filter((b) => b.grid_corrected);
+  if (!ok.length) return 'VBS 虛擬基站；縱橫坐標＝經緯度換算 TM2（未修正框架差：缺少觀測點經緯度）；高程為橢球高。';
+  const mean = (k) => ok.reduce((s, b) => s + b[k], 0) / ok.length;
+  const f4 = (v) => v.toFixed(4);
+  return 'VBS 虛擬基站；縱橫坐標＝經緯度換算 TM2 後，以同主站觀測點的控制器網格坐標修正框架差' +
+    `（平均 dN=${f4(mean('grid_shift_n'))}, dE=${f4(mean('grid_shift_e'))} m）；高程＝橢球高減平均大地起伏。`;
+}
+
 function neighborFormulas(r) {
   const C = 'C' + r;
   const D = 'D' + r;
@@ -226,9 +235,9 @@ function buildSheets(result, ctx) {
 
   // 2. 主站坐標表
   const bases = [[H('主站點名'), H('縱座標'), H('橫坐標'), H('高程坐標')]];
-  for (const b of result.bases) bases.push([T(b.label), N3(b.n), N3(b.e), N3(b.alt)]);
+  for (const b of result.bases) bases.push([T(b.label), N3(b.n), N3(b.e), N3(b.h)]);
   bases.push([]);
-  bases.push(['VBS 虛擬基站；高程為橢球高']);
+  bases.push([baseNote(result.bases)]);
   sheets.push({ name: '主站坐標表', cols: [16, 15, 15, 15], rows: bases });
 
   // 3. 觀測資料彙整表

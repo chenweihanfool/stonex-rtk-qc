@@ -149,9 +149,12 @@ def read_pd(path, id_from="auto"):
         observations = []
         warnings = []
         deleted = 0
+        pt_cols = {r[1] for r in conn.execute("PRAGMA table_info(Point)")}
+        geo_expr = ", ".join(c if c in pt_cols else f"NULL AS {c}"
+                             for c in ("Latitude", "Longitude", "Altitude"))
         for pt in conn.execute(
             "SELECT ID, NAME, CODE, North, East, Height, DeleteSign, GPSID, "
-            "StartTime, EndTime, PitchAngle, RollAngle FROM Point ORDER BY ID"
+            f"StartTime, EndTime, PitchAngle, RollAngle, {geo_expr} FROM Point ORDER BY ID"
         ):
             if pt["DeleteSign"]:
                 deleted += 1
@@ -204,6 +207,9 @@ def read_pd(path, id_from="auto"):
                 "base_lat": _f(g["Base_Latitude"]),
                 "base_lon": _f(g["Base_Longitude"]),
                 "base_alt": _f(g["Base_Altitude"]),
+                "lat": _f(pt["Latitude"]),
+                "lon": _f(pt["Longitude"]),
+                "alt": _f(pt["Altitude"]),
                 "dist_base": _f(g["DistancetoBase"]),
                 "ant_h": ant_h,
                 "pitch": pitch,

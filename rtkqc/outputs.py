@@ -267,7 +267,10 @@ def result_dict(observations, points, bases, pds, th, known_given):
     base_list = [{
         "label": b["label"], "base_id": b["base_id"],
         "lat": rnd(b["lat"], 8), "lon": rnd(b["lon"], 8), "alt": rnd(b["alt"], 3),
-        "n": rnd(b["n"], 3), "e": rnd(b["e"], 3), "count": b["count"],
+        "n": rnd(b["n"], 3), "e": rnd(b["e"], 3), "h": rnd(b["h"], 3),
+        "grid_shift_n": rnd(b["grid_shift_n"], 4), "grid_shift_e": rnd(b["grid_shift_e"], 4),
+        "undulation": rnd(b["undulation"], 3), "grid_corrected": bool(b["grid_corrected"]),
+        "count": b["count"],
     } for b in bases]
     neighbors = [{"id": x["id"], "other": x["other"], "dist": rnd(x["dist"], 3)}
                  for x in find_neighbors(points, th)]

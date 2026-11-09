@@ -164,7 +164,7 @@ test('接收儀資訊表與主站坐標表', async () => {
   assert.equal(Number(cellText(s2, 'B2')), an.result.bases[0].n);
   assert.equal(Number(cellText(s2, 'D2')), 40);
   // 表格下方空一列寫註記
-  assert.equal(cellText(s2, 'A' + (an.result.bases.length + 3)), 'VBS 虛擬基站；高程為橢球高');
+  assert.ok(cellText(s2, "A" + (an.result.bases.length + 3)).startsWith("VBS 虛擬基站；縱橫坐標"));
   assert.equal(cellText(s2, 'A' + (an.result.bases.length + 2)), null);
 });
 
@@ -233,4 +233,14 @@ test('RTKQC_SAMPLE_PD：真實樣本也能產出可讀的 xlsx', { skip: !proces
   const z = readZip(bytes);
   assert.equal(sheetNames(z).length, 6);
   for (const [name, data] of Object.entries(z)) assertWellFormed(data.toString('utf8'), name);
+});
+
+test('主站坐標表註記：有修正時寫明平均 dN／dE', () => {
+  const sheets = RTKXLSX.buildSheets({
+    bases: [{ label: 'B1', n: 1, e: 2, h: 3, alt: 4, grid_corrected: true, grid_shift_n: -0.26, grid_shift_e: 0.4 }],
+    observations: [], points: [], neighbors: [], remeasure: [], known_check: [],
+  }, { antennas: [], sources: [], runTime: 'x', version: '0' });
+  const note = sheets[1].rows[sheets[1].rows.length - 1][0];
+  assert.ok(note.includes('平均 dN=-0.2600, dE=0.4000 m'));
+  assert.ok(note.includes('高程＝橢球高減平均大地起伏'));
 });

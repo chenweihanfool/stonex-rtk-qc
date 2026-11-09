@@ -6,7 +6,8 @@ import sqlite3
 SCHEMA = [
     "CREATE TABLE Point (ID INTEGER PRIMARY KEY, NAME TEXT, CODE TEXT, North REAL, "
     "East REAL, Height REAL, DeleteSign INTEGER, GPSID INTEGER, StartTime TEXT, "
-    "EndTime TEXT, PitchAngle REAL, RollAngle REAL, HostIMEI TEXT)",
+    "EndTime TEXT, PitchAngle REAL, RollAngle REAL, HostIMEI TEXT, "
+    "Latitude REAL, Longitude REAL, Altitude REAL)",
     "CREATE TABLE GPSCoordinate (ID INTEGER PRIMARY KEY, HRMS REAL, VRMS REAL, "
     "PDOP REAL, HDOP REAL, VDOP REAL, Satellite_Locked INTEGER, Pos_State TEXT, "
     "Pos_Delay REAL, DistancetoBase REAL, Antenna_MeasureHeight REAL, "
@@ -36,13 +37,14 @@ BASE_E = 200000.0
 
 def obs(name, code, start, end, *, dn=0.0, de=0.0, h=50.0, base="B1",
         hrms=0.01, vrms=0.02, pdop=2.0, sat=12, pos_states=None,
-        pitch=0.0, roll=0.0, ant_h=1.8, deleted=0, dist=1000.0, orphan=False):
+        pitch=0.0, roll=0.0, ant_h=1.8, deleted=0, dist=1000.0, orphan=False,
+        lat=None, lon=None, alt=None, north=None, east=None):
     """回傳一筆觀測的規格 dict。dn/de 為相對假坐標的偏移（m）。"""
     return dict(name=name, code=code, start=start, end=end, dn=dn, de=de, h=h,
                 base=base, hrms=hrms, vrms=vrms, pdop=pdop, sat=sat,
                 pos_states=pos_states or ["FIXED", "FIXED", "FIXED"],
                 pitch=pitch, roll=roll, ant_h=ant_h, deleted=deleted, dist=dist,
-                orphan=orphan)
+                orphan=orphan, lat=lat, lon=lon, alt=alt, north=north, east=east)
 
 
 def make_pd(path, observations, antenna_serial="TSTSN0001", antenna_type="S900A"):
@@ -57,11 +59,13 @@ def make_pd(path, observations, antenna_serial="TSTSN0001", antenna_type="S900A"
             gid = 1000 + i
             conn.execute(
                 "INSERT INTO Point (ID, NAME, CODE, North, East, Height, DeleteSign, "
-                "GPSID, StartTime, EndTime, PitchAngle, RollAngle, HostIMEI) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (i, o["name"], o["code"], BASE_N + o["dn"], BASE_E + o["de"], o["h"],
+                "GPSID, StartTime, EndTime, PitchAngle, RollAngle, HostIMEI, "
+                "Latitude, Longitude, Altitude) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (i, o["name"], o["code"],
+                 BASE_N + o["dn"] if o["north"] is None else o["north"],
+                 BASE_E + o["de"] if o["east"] is None else o["east"], o["h"],
                  o["deleted"], gid, o["start"], o["end"], o["pitch"], o["roll"],
-                 "IMEI0000"),
+                 "IMEI0000", o["lat"], o["lon"], o["alt"]),
             )
             if o["orphan"]:
                 continue
@@ -147,3 +151,29 @@ def scenario(dir_path):
     d1 = make_pd(os.path.join(dir_path, "day1.PD"), day1)
     d2 = make_pd(os.path.join(dir_path, "day2.PD"), day2)
     return {"day1": d1, "day2": d2}
+
+
+FRAME_DN = -0.26
+FRAME_DE = 0.40
+FRAME_UNDULATION = 25.5
+
+
+def frame_scenario(dir_path):
+    """主站框架差修正用：Point 的經緯度（RTCM 轉換前框架）與控制器網格 N/E 差固定 (dN, dE)，
+    Altitude 比 Height 高 FRAME_UNDULATION。B1 的真值＝TM2(基站經緯度) + (dN, dE)，高程 40 − 25.5。
+    B1 有兩個點、B2 只有經緯度缺失的點（無法修正）。回傳 .PD 路徑。
+    """
+    from rtkqc.tm2 import lonlat_to_tm2
+
+    def pt(name, lat, lon, base, start):
+        n, e = lonlat_to_tm2(lat, lon)
+        return obs(name, "GDC" + name, start, start[:11] + "09:00:00", base=base,
+                   lat=lat, lon=lon, alt=50.0 + FRAME_UNDULATION,
+                   north=n + FRAME_DN, east=e + FRAME_DE)
+
+    observations = [
+        pt("1", 10.0, 100.001, "B1", "2026-11-01 08:00:00"),
+        pt("2", 10.001, 100.0, "B1", "2026-11-01 08:10:00"),
+        obs("3", "GDC3", "2026-11-01 08:20:00", "2026-11-01 08:25:00", base="B2"),
+    ]
+    return make_pd(os.path.join(dir_path, "frame.PD"), observations)

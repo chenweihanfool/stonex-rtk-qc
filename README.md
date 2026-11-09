@@ -102,10 +102,12 @@ CSV 一律 UTF-8-BOM，表頭為中文，Excel 可直接開啟。
 | `inputs[]` | `name`、`sha256`、`observations`（去重後每個輸入檔的觀測數） |
 | `observations[]` | 依 `id`、`start` 排序。`source`、`id`、`name`、`code`、`n`／`e`／`h`（3 位）、`start`、`end`、`epoch_n`、`fixed_n`、`hrms`／`vrms`／`pdop`（4 位）、`sat`、`ep_hrms_max`／`ep_vrms_max`／`ep_pdop_max`（4 位）、`ep_sat_min`、`ep_delay_max`（4 位）、`base_id`、`base_label`（主站點名，見 `bases`）、`base_lat`／`base_lon`（8 位）、`base_alt`（3 位）、`dist_base`（3 位）、`ant_h`（3 位）、`pitch`／`roll`（2 位）、`tilt_off`（4 位）、`flags`（該筆旗標 F1、T1）、`row_flags`（該筆自己的 X2、X3、X4、F1、T1，依 X1…X6、F1、T1、D1、K1 排序） |
 | `points[]` | 依 `id` 排序。`id`、`count`、`avg_n`／`avg_e`／`avg_h`（3 位）、`d2`／`dh`（4 位）、`first_start`、`last_end`、`interval_min`（2 位）、`flags`（點位旗標，依 X1…X6、F1、T1、D1、K1 排序） |
-| `bases[]` | 依出現順序（開始時間，同時間依輸入順序）。`label`（主站點名＝Base_ID，同 ID 不同位置加 `(2)`、`(3)`）、`base_id`、`lat`／`lon`（8 位）、`alt`（3 位，Base_Altitude）、`n`／`e`（TWD97 TM2，3 位）、`count` |
+| `bases[]` | 依出現順序（開始時間，同時間依輸入順序）。`label`（主站點名＝Base_ID，同 ID 不同位置加 `(2)`、`(3)`）、`base_id`、`lat`／`lon`（8 位）、`alt`（3 位，原始 Base_Altitude）、`n`／`e`（TWD97 TM2 網格坐標，3 位，已修正框架差）、`h`（3 位，`alt − undulation`）、`grid_shift_n`／`grid_shift_e`（4 位，框架修正量）、`undulation`（3 位，平均大地起伏）、`grid_corrected`（布林）、`count` |
 | `neighbors[]` | 依點位排序的 i<j 點對：`id`、`other`、`dist`（3 位，平均坐標 2D 距離，≤ `neighbor_max_m`） |
 | `remeasure[]` | 有旗標的點：`id`、`flags[]`、`actions[]`、`avg_n`／`avg_e`（3 位） |
 | `known_check[]` | 只在有已知點時有內容：`id`、`dn`／`de`／`d2`／`dh`（4 位）、`over`（布林） |
+
+主站坐標的框架修正：`.PD` 的經緯度（Point.Latitude／Longitude、Base_Latitude／Longitude）是網路 RTCM 轉換前的框架，Point 的 North／East／Height 才是控制器轉換後的 TWD97 網格。對每個主站，取使用該主站的所有觀測：`grid_shift_n = 平均(North − TM2N(Latitude,Longitude))`、`grid_shift_e` 同理、`undulation = 平均(Altitude − Height)`；主站網格坐標 `n = TM2N(基站經緯度) + grid_shift_n`、`e` 同理、`h = Base_Altitude − undulation`。Point 缺少 Latitude／Longitude／Altitude 欄位或值時無法修正，保留未修正值並標 `grid_corrected: false`。
 
 主站判定：Base_ID 相同且基站位置差（近似平面距離）小於 `same_base_tol_m` 視為同一主站。
 

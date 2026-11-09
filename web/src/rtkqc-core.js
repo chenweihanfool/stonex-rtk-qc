@@ -255,9 +255,11 @@ async function readPD(SQL, bytes, name, idFrom) {
     const observations = [];
     const warnings = [];
     let deleted = 0;
+    const ptCols = new Set(queryAll(db, 'PRAGMA table_info(Point)').map((r) => r.name));
+    const geoExpr = ['Latitude', 'Longitude', 'Altitude'].map((c) => (ptCols.has(c) ? c : `NULL AS ${c}`)).join(', ');
     for (const pt of queryAll(db,
       'SELECT ID, NAME, CODE, North, East, Height, DeleteSign, GPSID, StartTime, EndTime, ' +
-      'PitchAngle, RollAngle FROM Point ORDER BY ID')) {
+      `PitchAngle, RollAngle, ${geoExpr} FROM Point ORDER BY ID`)) {
       if (pt.DeleteSign) { deleted++; continue; }
       const g = gps.get(pt.GPSID);
       if (g === undefined) {
@@ -304,6 +306,9 @@ async function readPD(SQL, bytes, name, idFrom) {
         base_lat: fOrNull(g.Base_Latitude),
         base_lon: fOrNull(g.Base_Longitude),
         base_alt: fOrNull(g.Base_Altitude),
+        lat: fOrNull(pt.Latitude),
+        lon: fOrNull(pt.Longitude),
+        alt: fOrNull(pt.Altitude),
         dist_base: fOrNull(g.DistancetoBase),
         ant_h: antH,
         pitch,
@@ -549,13 +554,44 @@ function assignBases(observations, th) {
       let e = null;
       if (o.base_lat !== null && o.base_lon !== null) [n, e] = TM(o.base_lat, o.base_lon);
       found = { label, base_id: o.base_id, lat: o.base_lat, lon: o.base_lon,
-        alt: o.base_alt === undefined ? null : o.base_alt, n, e, count: 0 };
+        alt: o.base_alt === undefined ? null : o.base_alt, n, e,
+        h: o.base_alt === undefined ? null : o.base_alt, grid_shift_n: null, grid_shift_e: null,
+        undulation: null, grid_corrected: false, count: 0 };
       bases.push(found);
     }
     found.count++;
     o.base_label = found.label;
   }
+  correctBases(observations, bases);
   return bases;
+}
+
+// 以同主站觀測點的控制器網格坐標修正主站坐標的框架差（同 rtkqc/rules.py correct_bases）
+function correctBases(observations, bases) {
+  for (const b of bases) {
+    const dn = [];
+    const de = [];
+    const du = [];
+    for (const o of observations) {
+      if (o.base_label !== b.label) continue;
+      if (o.lat !== null && o.lat !== undefined && o.lon !== null && o.lon !== undefined) {
+        const [tn, te] = TM(o.lat, o.lon);
+        dn.push(o.n - tn);
+        de.push(o.e - te);
+      }
+      if (o.alt !== null && o.alt !== undefined && o.h !== null) du.push(o.alt - o.h);
+    }
+    if (!dn.length || b.n === null) continue;
+    b.grid_shift_n = meanOf(dn);
+    b.grid_shift_e = meanOf(de);
+    b.n += b.grid_shift_n;
+    b.e += b.grid_shift_e;
+    b.grid_corrected = true;
+    if (du.length && b.alt !== null) {
+      b.undulation = meanOf(du);
+      b.h = b.alt - b.undulation;
+    }
+  }
 }
 
 function findNeighbors(points, th) {
@@ -605,7 +641,9 @@ function buildResult(observations, points, bases, pds, th) {
   }));
   const baseList = bases.map((b) => ({
     label: b.label, base_id: b.base_id, lat: rnd(b.lat, 8), lon: rnd(b.lon, 8),
-    alt: rnd(b.alt, 3), n: rnd(b.n, 3), e: rnd(b.e, 3), count: b.count,
+    alt: rnd(b.alt, 3), n: rnd(b.n, 3), e: rnd(b.e, 3), h: rnd(b.h, 3),
+    grid_shift_n: rnd(b.grid_shift_n, 4), grid_shift_e: rnd(b.grid_shift_e, 4),
+    undulation: rnd(b.undulation, 3), grid_corrected: !!b.grid_corrected, count: b.count,
   }));
   const neighbors = findNeighbors(points, th).map((x) => ({ id: x.id, other: x.other, dist: rnd(x.dist, 3) }));
   const remeasure = points.filter((p) => p.flags.length).map((p) => ({

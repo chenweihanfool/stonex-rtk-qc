@@ -183,6 +183,47 @@ class TestJsonContract(JsonBase):
         self.assertEqual(len(pairs), 66)  # 12 點全在 100 m 內，C(12,2)
 
 
+class TestFrameCorrection(unittest.TestCase):
+    def test_base_grid_corrected_to_truth(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            pd = mf.frame_scenario(tmp)
+            jp = os.path.join(tmp, "r.json")
+            code, _, err = run_cli([pd, "--out", os.path.join(tmp, "o"), "--json", jp])
+            self.assertEqual(code, 0, err)
+            with open(jp, encoding="utf-8") as f:
+                bases = json.load(f)["bases"]
+            b1, b2 = bases
+            tn, te = lonlat_to_tm2(10.0, 100.0)
+            self.assertTrue(b1["grid_corrected"])
+            self.assertLess(abs(b1["n"] - (tn + mf.FRAME_DN)), 0.001)
+            self.assertLess(abs(b1["e"] - (te + mf.FRAME_DE)), 0.001)
+            self.assertLess(abs(b1["h"] - (40.0 - mf.FRAME_UNDULATION)), 0.001)
+            self.assertAlmostEqual(b1["grid_shift_n"], mf.FRAME_DN, places=3)
+            self.assertAlmostEqual(b1["grid_shift_e"], mf.FRAME_DE, places=3)
+            self.assertAlmostEqual(b1["undulation"], mf.FRAME_UNDULATION, places=3)
+            # B2 的觀測點沒有經緯度：保留未修正值
+            self.assertFalse(b2["grid_corrected"])
+            self.assertIsNone(b2["grid_shift_n"])
+            self.assertIsNone(b2["undulation"])
+            tn2, te2 = lonlat_to_tm2(10.0, 100.01)
+            self.assertEqual(b2["n"], rnd(tn2, 3))
+            self.assertEqual(b2["h"], 40.0)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_scenario_without_point_latlon_is_uncorrected(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            files = mf.scenario(tmp)
+            jp = os.path.join(tmp, "r.json")
+            run_cli([files["day1"], "--out", os.path.join(tmp, "o"), "--json", jp])
+            with open(jp, encoding="utf-8") as f:
+                self.assertTrue(all(not b["grid_corrected"] for b in json.load(f)["bases"]))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class TestCtl(JsonBase):
     def test_ctl_format(self):
         with open(self.ctl_path, "rb") as f:
