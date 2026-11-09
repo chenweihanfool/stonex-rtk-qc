@@ -1,0 +1,12 @@
+# 真實外業資料與輸出一律不進版控
+*.PD
+*.pd
+*.rw5
+*.jxl
+*.html.sample
+out/
+output/
+samples/
+__pycache__/
+*.pyc
+.venv/
