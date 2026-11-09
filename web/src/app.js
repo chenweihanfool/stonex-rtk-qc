@@ -9,6 +9,8 @@ var VERSION_URL = 'https://chenweihanfool.github.io/stonex-rtk-qc/version.json';
 var SITE_PREFIX = 'https://chenweihanfool.github.io/';
 var LS_TH = 'rtkqc.thresholds.v1';
 var LS_IDFROM = 'rtkqc.idfrom.v1';
+var LS_MODE = 'rtkqc.mode.v1';
+var LS_TFM = 'rtkqc.transform.v1';
 
 var TH_FIELDS = [
   ['same_base_tol_m', '同主站位置容許差（m）'],
@@ -20,15 +22,22 @@ var TH_FIELDS = [
   ['min_interval_min', '兩次觀測最短間隔（分，0＝不檢查）'],
   ['known_tol_2d', '與已知點較差上限（m）'],
   ['neighbor_max_m', '相鄰點位距離上限（m）'],
+  ['min_fixed_epochs', '每筆觀測最少固定解筆數（0＝不檢查；圖根模式預設 180）'],
+  ['transform_resid_max', '共同點轉換後坐標分量改正數上限（m）'],
+  ['azimuth_diff_max_sec', '共同點間方位角較差上限（秒）'],
+  ['distance_ratio_min', '共同點間水平距相對較差比值分母下限'],
 ];
 
-var RED_FLAGS = ['X1', 'X2', 'X3', 'X4', 'X5', 'X6', 'K1'];
+var RED_FLAGS = ['X1', 'X2', 'X3', 'X4', 'X5', 'X6', 'K1', 'E1', 'C1', 'C2', 'C3'];
 
 var state = {
   entries: [], // { id, name, bytes, pd, pdMode, error }
   nextId: 1,
   known: null, // { name, text }
-  th: Object.assign({}, R.DEFAULT_THRESHOLDS),
+  control: null, // { name, text }：已知加密點成果表
+  mode: 'survey',
+  transform: 'auto',
+  thOver: {}, // 使用者改過的門檻（其餘依作業模式預設）
   analysis: null,
   busy: false,
   rerun: false,
@@ -64,16 +73,28 @@ function loadSettings() {
   var raw = lsGet(LS_TH);
   if (raw) {
     try {
-      var obj = JSON.parse(raw);
-      var th = R.normalizeThresholds(obj);
+      var th = R.normalizeThresholds(JSON.parse(raw));
+      var over = {};
       Object.keys(th).forEach(function (k) {
-        if (typeof th[k] !== 'number' || th[k] < 0) delete th[k];
+        // 只保留與預設不同的值（舊版存的是全部門檻；相同於預設的就跟著作業模式走）
+        if (typeof th[k] === 'number' && th[k] >= 0 && th[k] !== R.DEFAULT_THRESHOLDS[k]) over[k] = th[k];
       });
-      state.th = Object.assign({}, R.DEFAULT_THRESHOLDS, th);
+      state.thOver = over;
     } catch (e) { /* 壞掉的設定就用預設 */ }
   }
   var idFrom = lsGet(LS_IDFROM);
   if (idFrom === 'auto' || idFrom === 'name' || idFrom === 'code') $('id-from').value = idFrom;
+  var mode = lsGet(LS_MODE);
+  if (R.MODES.indexOf(mode) >= 0) state.mode = mode;
+  $('mode').value = state.mode;
+  var tfm = lsGet(LS_TFM);
+  if (R.METHODS.indexOf(tfm) >= 0) state.transform = tfm;
+  $('transform-method').value = state.transform;
+}
+
+// 目前實際使用的門檻（作業模式預設＋使用者改過的）
+function effectiveTh() {
+  return R.normalizeThresholds(state.thOver, state.mode);
 }
 
 /* ---------- 訊息 ---------- */
@@ -120,11 +141,14 @@ function readFileText(file) {
   });
 }
 
-function addFiles(fileList) {
+function addFiles(fileList, kind) {
   var files = Array.prototype.slice.call(fileList || []);
   var jobs = files.map(function (f) {
-    if (/\.(csv|txt)$/i.test(f.name)) {
-      return readFileText(f).then(function (t) { state.known = { name: f.name, text: t }; });
+    if (kind === 'control' || /\.(csv|txt)$/i.test(f.name)) {
+      return readFileText(f).then(function (t) {
+        if (kind === 'control') state.control = { name: f.name, text: t };
+        else state.known = { name: f.name, text: t };
+      });
     }
     return readFileBytes(f).then(function (bytes) {
       state.entries.push({ id: state.nextId++, name: f.name, bytes: bytes, pd: null, pdMode: null, error: null });
@@ -152,6 +176,7 @@ function renderFileList() {
     ul.appendChild(el('li', null, [el('span', { class: 'name', text: en.name }), status, rm]));
   });
   $('known-name').textContent = state.known ? '已知點檔：' + state.known.name : '';
+  $('control-name').textContent = state.control ? '加密點成果表：' + state.control.name : '';
 }
 
 /* ---------- 執行 ---------- */
@@ -215,7 +240,27 @@ function doRun() {
       showMessages(msgs);
       return;
     }
-    var an = R.analyze({ pds: pds, thresholds: state.th, known: known, knownName: knownName });
+    var control = null;
+    var controlName = null;
+    if (state.control) {
+      try {
+        control = R.parseKnownCsv(state.control.text, state.control.name);
+        controlName = state.control.name;
+      } catch (e) {
+        msgs.push({ kind: 'err', text: e.message });
+      }
+    }
+    var an;
+    try {
+      an = R.analyze({ pds: pds, thresholds: state.thOver, known: known, knownName: knownName,
+        mode: state.mode, control: control, controlName: controlName, transform: state.transform });
+    } catch (e) {
+      msgs.push({ kind: 'err', text: e && e.message ? e.message : String(e) });
+      state.analysis = null;
+      $('results').hidden = true;
+      showMessages(msgs);
+      return;
+    }
     an.warnings.forEach(function (w) { msgs.push({ kind: 'warn', text: w }); });
     state.analysis = an;
     showMessages(msgs);
@@ -236,6 +281,48 @@ function chips(flags) {
 
 function th(text) { return el('th', { text: text }); }
 function td(text, cls) { return el('td', cls ? { class: cls, text: text } : { text: text }); }
+
+// 轉換摘要卡與每日連測警告
+function renderTransform(an) {
+  var sec = $('transform-section');
+  var card = $('transform-card');
+  var notes = $('transform-notes');
+  card.textContent = '';
+  notes.textContent = '';
+  if (an.controlName === null) { sec.hidden = true; return; }
+  sec.hidden = false;
+  var tf = an.result.transform;
+  function stat(num, lbl) {
+    card.appendChild(el('div', { class: 'stat' }, [el('div', { class: 'num', text: String(num) }), el('div', { class: 'lbl', text: lbl })]));
+  }
+  if (!tf) {
+    stat('不轉換', '沒有共同點，或指定不轉換（觀測點號與加密點號都不相同）');
+  } else {
+    var maxRes = 0;
+    tf.common.forEach(function (c) { maxRes = Math.max(maxRes, Math.abs(c.vn), Math.abs(c.ve)); });
+    var c1 = tf.common.filter(function (c) { return c.flags.indexOf('C1') >= 0; }).length;
+    var c2 = tf.pairs.filter(function (x) { return x.flags.indexOf('C2') >= 0; }).length;
+    var c3 = tf.pairs.filter(function (x) { return x.flags.indexOf('C3') >= 0; }).length;
+    stat(R.METHOD_LABEL[tf.method], '轉換方法');
+    stat(tf.n_common, '共同點數（多餘觀測 ' + tf.redundancy + '）');
+    if (tf.method === 'helmert') {
+      stat(R.fmt(tf.params.scale_ppm, 3), '尺度（ppm）');
+      stat(R.fmt(tf.params.rotation_sec, 3), '旋轉（秒）');
+    }
+    stat(R.fmt(maxRes, 4), '最大殘差分量（m）');
+    [['C1', c1], ['C2', c2], ['C3', c3]].forEach(function (it) {
+      var box = el('div', { class: 'stat' }, [el('div', { class: 'num', text: String(it[1]) }), el('div', { class: 'lbl' })]);
+      box.lastChild.appendChild(chips([it[0]]));
+      box.lastChild.appendChild(document.createTextNode(R.FLAG_DESC[it[0]]));
+      card.appendChild(box);
+    });
+    if (tf.note) notes.appendChild(el('div', { class: 'msg warn', text: tf.note }));
+  }
+  if (an.daysWithoutControl.length) {
+    notes.appendChild(el('div', { class: 'msg warn',
+      text: '以下日期沒有連測任何已知加密點：' + an.daysWithoutControl.join('、') }));
+  }
+}
 
 function renderResults(an) {
   var res = an.result;
@@ -263,10 +350,14 @@ function renderResults(an) {
     }
   });
 
+  renderTransform(an);
+
   var pt = $('points-table');
   pt.textContent = '';
   var head = el('tr');
-  ['點號', '觀測數', '平均N', '平均E', '平均H', '兩次較差2D(m)', '高程較差(m)', '間隔(分)', '旗標'].forEach(function (h) { head.appendChild(th(h)); });
+  var ptHead = ['點號', '觀測數', '平均N', '平均E', '平均H', '兩次較差2D(m)', '高程較差(m)', '間隔(分)', '旗標'];
+  if (an.tf) ptHead = ptHead.concat(['轉換後N', '轉換後E', '轉換後H']);
+  ptHead.forEach(function (h) { head.appendChild(th(h)); });
   pt.appendChild(el('thead', null, [head]));
   var tb = el('tbody');
   an.points.forEach(function (p) {
@@ -283,6 +374,11 @@ function renderResults(an) {
     var c = el('td');
     c.appendChild(chips(p.flags));
     tr.appendChild(c);
+    if (an.tf) {
+      tr.appendChild(td(R.fmt(p.n_t, 3), 'num'));
+      tr.appendChild(td(R.fmt(p.e_t, 3), 'num'));
+      tr.appendChild(td(R.fmt(p.h_t, 3), 'num'));
+    }
     tb.appendChild(tr);
   });
   pt.appendChild(tb);
@@ -354,6 +450,7 @@ function buildAll(an) {
     runTime: t.display,
     version: R.VERSION,
     hasKnown: an.knownName !== null,
+    hasControl: an.controlName !== null,
   }, t.date);
   return { texts: texts, xlsx: xlsx, date: t.date };
 }
@@ -371,6 +468,10 @@ function renderDownloads(an) {
     { label: 'remeasure.csv', name: 'remeasure.csv', mime: 'text/csv;charset=utf-8' },
   ];
   if (an.knownName !== null) list.push({ label: 'known_check.csv', name: 'known_check.csv', mime: 'text/csv;charset=utf-8' });
+  if (an.tf) {
+    list.push({ label: 'transform.csv', name: 'transform.csv', mime: 'text/csv;charset=utf-8' });
+    list.push({ label: 'transform_pairs.csv', name: 'transform_pairs.csv', mime: 'text/csv;charset=utf-8' });
+  }
   list.push({ label: 'handbook.html（手簿）', name: 'handbook.html', mime: 'text/html;charset=utf-8' });
   list.push({ label: 'manifest.json', name: 'manifest.json', mime: 'application/json' });
   list.push({ label: 'CTL', name: 'control.ctl', mime: 'text/plain;charset=utf-8' });
@@ -403,9 +504,10 @@ function renderDownloads(an) {
 function buildThresholdUi() {
   var grid = $('th-grid');
   grid.textContent = '';
+  var eff = effectiveTh();
   TH_FIELDS.forEach(function (f) {
     var inp = el('input', { type: 'number', step: 'any', min: '0', id: 'th-' + f[0] });
-    inp.value = String(state.th[f[0]]);
+    inp.value = String(eff[f[0]]);
     inp.addEventListener('change', function () {
       var v = Number(inp.value);
       if (inp.value.trim() === '' || !isFinite(v) || v < 0) {
@@ -413,8 +515,8 @@ function buildThresholdUi() {
         return;
       }
       inp.className = '';
-      state.th[f[0]] = v;
-      lsSet(LS_TH, JSON.stringify(state.th));
+      state.thOver[f[0]] = v;
+      lsSet(LS_TH, JSON.stringify(state.thOver));
       run();
     });
     grid.appendChild(el('label', null, [f[1], inp]));
@@ -514,11 +616,23 @@ function init() {
   window.addEventListener('drop', function (e) { e.preventDefault(); });
 
   $('pd-input').addEventListener('change', function (e) { addFiles(e.target.files); e.target.value = ''; });
-  $('known-input').addEventListener('change', function (e) { addFiles(e.target.files); e.target.value = ''; });
+  $('known-input').addEventListener('change', function (e) { addFiles(e.target.files, 'known'); e.target.value = ''; });
+  $('control-input').addEventListener('change', function (e) { addFiles(e.target.files, 'control'); e.target.value = ''; });
   $('id-from').addEventListener('change', function () { lsSet(LS_IDFROM, $('id-from').value); run(); });
+  $('mode').addEventListener('change', function () {
+    state.mode = $('mode').value;
+    lsSet(LS_MODE, state.mode);
+    buildThresholdUi();
+    run();
+  });
+  $('transform-method').addEventListener('change', function () {
+    state.transform = $('transform-method').value;
+    lsSet(LS_TFM, state.transform);
+    run();
+  });
   $('th-reset').addEventListener('click', function () {
-    state.th = Object.assign({}, R.DEFAULT_THRESHOLDS);
-    lsSet(LS_TH, JSON.stringify(state.th));
+    state.thOver = {};
+    lsSet(LS_TH, JSON.stringify(state.thOver));
     buildThresholdUi();
     run();
   });
